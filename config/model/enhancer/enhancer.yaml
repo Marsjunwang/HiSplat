@@ -1,0 +1,14 @@
+name: enhancer
+
+pose_enhancer:
+  encoder:
+    num_layers: 18
+    weights_init: "pretrained"
+    num_input_images: 2
+  decoder:
+    num_ch_enc: 128
+    num_input_features: 1
+    num_frames_to_predict_for: 2
+    stride: 1
+  
+feature_enhancer: Null

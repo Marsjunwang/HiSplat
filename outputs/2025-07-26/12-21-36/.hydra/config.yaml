@@ -1,0 +1,134 @@
+dataset:
+  view_sampler:
+    name: bounded
+    num_target_views: 4
+    num_context_views: 2
+    min_distance_between_context_views: 45
+    max_distance_between_context_views: 192
+    min_distance_to_context_views: 0
+    warm_up_steps: 150000
+    initial_min_distance_between_context_views: 25
+    initial_max_distance_between_context_views: 45
+    special_way: null
+  name: re10k
+  roots:
+  - datasets/re10k
+  make_baseline_1: true
+  augment: true
+  image_shape:
+  - 180
+  - 320
+  background_color:
+  - 0.0
+  - 0.0
+  - 0.0
+  cameras_are_circular: false
+  baseline_epsilon: 0.001
+  max_fov: 100.0
+  skip_bad_shape: true
+  near: -1.0
+  far: -1.0
+  baseline_scale_bounds: true
+  shuffle_val: true
+  test_len: -1
+  test_chunk_interval: 1
+  test_times_per_scene: 1
+  overfit_to_scene: null
+model:
+  encoder:
+    name: costvolume
+    opacity_mapping:
+      initial: 0.0
+      final: 0.0
+      warm_up: 1
+    num_depth_candidates: 32
+    num_surfaces: 1
+    gaussians_per_pixel: 1
+    gaussian_adapter:
+      gaussian_scale_min: 0.5
+      gaussian_scale_max: 15.0
+      sh_degree: 4
+    d_feature: 128
+    visualizer:
+      num_samples: 8
+      min_resolution: 256
+      export_ply: false
+    unimatch_weights_path: checkpoints/gmdepth-scale1-resumeflowthings-scannet-5d9d7964.pth
+    multiview_trans_attn_split: 2
+    costvolume_unet_feat_dim: 128
+    costvolume_unet_channel_mult:
+    - 1
+    - 1
+    - 1
+    costvolume_unet_attn_res: []
+    depth_unet_feat_dim: 64
+    depth_unet_attn_res: []
+    depth_unet_channel_mult:
+    - 1
+    - 1
+    - 1
+    downscale_factor: 4
+    shim_patch_size: 4
+  decoder:
+    name: splatting_cuda
+loss:
+  mse:
+    weight: 1.0
+wandb:
+  project: hisplat
+  entity: placeholder
+  name: placeholder
+  mode: offline
+  id: null
+use_tensorboard: null
+use_xy_sin: true
+mode: train
+device: auto
+method: hisplat
+output_dir: null
+data_loader:
+  train:
+    num_workers: 10
+    persistent_workers: true
+    batch_size: 4
+    seed: 1234
+  test:
+    num_workers: 4
+    persistent_workers: false
+    batch_size: 1
+    seed: 2345
+  val:
+    num_workers: 1
+    persistent_workers: true
+    batch_size: 1
+    seed: 3456
+optimizer:
+  lr: 0.0002
+  warm_up_steps: 2000
+  cosine_lr: true
+checkpointing:
+  load: null
+  every_n_train_steps: 10000
+  save_top_k: -1
+  pretrained_model: null
+train:
+  depth_mode: null
+  extended_visualization: false
+  print_log_every_n_steps: 1
+  align_2d: false
+  align_3d: false
+  align_depth: false
+  normal_norm: true
+test:
+  output_path: outputs/test
+  compute_scores: true
+  eval_time_skip_steps: 0
+  save_image: false
+  save_video: false
+  test_all_ckpt: false
+seed: 111123
+trainer:
+  max_steps: -1
+  val_check_interval: 3000
+  gradient_clip_val: 0.5
+  num_sanity_val_steps: 0
