@@ -2,10 +2,18 @@ from math import isqrt
 from typing import Literal
 
 import torch
-from c_diff_gaussian_rasterization import (
-    GaussianRasterizationSettings,
-    GaussianRasterizer,
-)
+if torch.cuda.is_available():
+    from diff_gaussian_rasterization import (
+        GaussianRasterizationSettings,
+        GaussianRasterizer,
+    )
+else:
+    from c_diff_gaussian_rasterization import (
+        GaussianRasterizationSettings,
+        GaussianRasterizer,
+    )
+
+
 from einops import einsum, rearrange, repeat
 from jaxtyping import Float
 from torch import Tensor

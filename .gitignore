@@ -1,2 +1,4 @@
 datasets/
 diff-gaussian-rasterization/
+checkpoints/
+outputs/

@@ -113,6 +113,12 @@ class BackbonePyramid(torch.nn.Module):
     This function is used to extract the feature of different view
     the CNN is used to extract single view feature
     Transformer is used to extract single&multi view feature
+    
+    Visualization Usage:
+    - Set model.visualize_dino = True to visualize DINO features
+    - Set model.visualize_backbone = True to visualize backbone output features  
+    - Set model.visualize_trans = True to visualize transformer output features
+    - Visualizations will be saved to 'debug_visualizations/' directory
     """
 
     def __init__(
@@ -160,14 +166,431 @@ class BackbonePyramid(torch.nn.Module):
         # dinov2 patchsize=14,  0.5 * 14/16
         imgs = imgs.reshape(B * V, 3, H, W)
         dino_feature = self.dino(org_imgs)
+        
+        # Visualize dino features for debugging
+        if hasattr(self, 'visualize_dino') and self.visualize_dino:
+            self._visualize_dino_features(dino_feature)
+        
         out_feature = self.backbone(imgs, dino_feature)
+        
+        # Visualize out_feature for debugging
+        if hasattr(self, 'visualize_backbone') and self.visualize_backbone:
+            self._visualize_backbone_features(out_feature, B, V, viz_view=0)
+        
         trans_feature_in = rearrange(out_feature[0], "(b v) c h w -> b v c h w", b=B).chunk(dim=1, chunks=V)
         trans_feature_in = [f[:, 0] for f in trans_feature_in]
         # add position to features
         trans_feature_in = feature_add_position_list(trans_feature_in, 2, out_feature[0].size(1))
         cur_features_list = self.transformer(trans_feature_in, 2)
-        trans_features = torch.stack(cur_features_list, dim=1)  # B V 64 64
+        trans_features = torch.stack(cur_features_list, dim=1)  # [1, 2, 128, 64, 64]
+        
+        # Visualize trans_features for debugging
+        if hasattr(self, 'visualize_trans') and self.visualize_trans:
+            self._visualize_trans_features(trans_features, viz_view=0)
+        
         return (out_feature, trans_features)
+
+    def _visualize_dino_features(self, dino_feature):
+        """Visualize DINO features for debugging"""
+        import matplotlib.pyplot as plt
+        import os
+        os.makedirs('debug_visualizations', exist_ok=True)
+        
+        # Visualize first batch, first view's dino features
+        feat_vis = dino_feature[0].detach().cpu()  # [64, 32, 32]
+        
+        # Check if we have spatial dimensions for visualization
+        if len(feat_vis.shape) >= 2:
+            # Show first few channels
+            fig, axes = plt.subplots(4, 8, figsize=(16, 8))
+            for i in range(min(32, feat_vis.shape[0])):
+                ax = axes[i // 8, i % 8]
+                if len(feat_vis.shape) == 3:  # [C, H, W]
+                    im = ax.imshow(feat_vis[i], cmap='viridis')
+                elif len(feat_vis.shape) == 2:  # [H, W] 
+                    im = ax.imshow(feat_vis, cmap='viridis')
+                    break  # Only one image to show
+                else:  # [C] - 1D features, create a bar plot instead
+                    ax.bar(range(len(feat_vis)), feat_vis)
+                    ax.set_title(f'Feature values')
+                    break
+                ax.set_title(f'Channel {i}')
+                ax.axis('off')
+                plt.colorbar(im, ax=ax)
+            
+            plt.tight_layout()
+            plt.savefig('debug_visualizations/dino_features_channels.png', dpi=150)
+            plt.close()
+        
+        # Visualize feature statistics
+        print(f"DINO feature shape: {dino_feature.shape}")
+        print(f"DINO feature range: [{dino_feature.min().item():.4f}, {dino_feature.max().item():.4f}]")
+        print(f"DINO feature mean: {dino_feature.mean().item():.4f}")
+        print(f"DINO feature std: {dino_feature.std().item():.4f}")
+        
+        # Save feature norm visualization
+        feat_norm = torch.norm(feat_vis, dim=0)  # [H, W]
+        plt.figure(figsize=(8, 6))
+        plt.imshow(feat_norm, cmap='hot')
+        plt.colorbar()
+        plt.title('DINO Feature L2 Norm')
+        plt.savefig('debug_visualizations/dino_feature_norm.png', dpi=150)
+        plt.close()
+
+    def _visualize_backbone_features(self, out_feature, batch_size, num_views, viz_view=0):
+        """Visualize backbone output features for debugging"""
+        import matplotlib.pyplot as plt
+        import numpy as np
+        import os
+        os.makedirs('debug_visualizations', exist_ok=True)
+        
+        # out_feature is a list/tuple of features at different scales
+        for scale_idx, scale_feat in enumerate(out_feature):
+            if scale_feat is None:
+                continue
+                
+            # Reshape from (B*V, C, H, W) to (B, V, C, H, W) for visualization
+            _, C, H, W = scale_feat.shape
+            scale_feat_reshaped = scale_feat.view(batch_size, num_views, C, H, W)
+            
+            # Visualize first batch, first view
+            feat_vis = scale_feat_reshaped[0, viz_view].detach().cpu()  # [C, H, W]
+            
+            print(f"Backbone feature scale {scale_idx} shape: {scale_feat.shape}")
+            print(f"Backbone feature scale {scale_idx} range: [{scale_feat.min().item():.4f}, {scale_feat.max().item():.4f}]")
+            print(f"Backbone feature scale {scale_idx} mean: {scale_feat.mean().item():.4f}")
+            print(f"Backbone feature scale {scale_idx} std: {scale_feat.std().item():.4f}")
+            
+            # Visualize feature channels (show first 16 channels in a 4x4 grid)
+            num_channels_to_show = min(16, feat_vis.shape[0])
+            if num_channels_to_show > 0:
+                rows = 4
+                cols = 4
+                fig, axes_raw = plt.subplots(rows, cols, figsize=(12, 12))
+                
+                # Convert to list for consistent handling
+                if rows * cols == 1:
+                    axes_list = [axes_raw]
+                else:
+                    axes_list = list(axes_raw.flatten())
+                
+                for i in range(num_channels_to_show):
+                    ax = axes_list[i]
+                    im = ax.imshow(feat_vis[i], cmap='viridis')
+                    ax.set_title(f'Ch {i}')
+                    ax.axis('off')
+                    plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+                
+                # Hide unused subplots
+                for i in range(num_channels_to_show, len(axes_list)):
+                    axes_list[i].axis('off')
+                
+                plt.tight_layout()
+                plt.savefig(f'debug_visualizations/backbone_features_scale{scale_idx}_channels.png', dpi=150, bbox_inches='tight')
+                plt.close()
+            
+            # Visualize feature norm across channels with top N values highlighted
+            # Use formula: 20 * 2^scale_idx
+            top_n = 20 * (2 ** scale_idx)
+            
+            feat_norm = torch.norm(feat_vis, dim=0)  # [H, W]
+            
+            # Create border mask to exclude edge pixels (5% border on each side)
+            border_ratio = 0.05
+            border_h = max(1, int(H * border_ratio))
+            border_w = max(1, int(W * border_ratio))
+            
+            # Create mask excluding border pixels
+            border_mask = torch.ones_like(feat_norm, dtype=torch.bool)
+            border_mask[:border_h, :] = False  # top border
+            border_mask[-border_h:, :] = False  # bottom border
+            border_mask[:, :border_w] = False  # left border
+            border_mask[:, -border_w:] = False  # right border
+            
+            # Apply border mask to norm values for analysis
+            feat_norm_masked = feat_norm.clone()
+            feat_norm_masked[~border_mask] = -float('inf')  # Set border pixels to very low value so they won't be selected
+            
+            # Create a figure with multiple visualizations
+            fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(16, 12))
+            
+            # 1. Regular norm visualization
+            im1 = ax1.imshow(feat_norm, cmap='hot')
+            plt.colorbar(im1, ax=ax1)
+            ax1.set_title(f'Backbone Features Scale {scale_idx} - L2 Norm')
+            
+            # 2. Top N norm values with different colors (excluding border pixels)
+            feat_norm_flat = feat_norm_masked.flatten()
+            valid_indices = torch.where(feat_norm_flat != -float('inf'))[0]
+            valid_values = feat_norm_flat[valid_indices]
+            
+            if len(valid_values) > 0:
+                topn_indices_valid = torch.topk(valid_values, k=min(top_n, len(valid_values))).indices
+                topn_indices = valid_indices[topn_indices_valid]
+            else:
+                topn_indices = torch.tensor([], dtype=torch.long)
+            
+            # Create a mask for top N values
+            topn_mask = torch.zeros_like(feat_norm_flat, dtype=torch.bool)
+            if len(topn_indices) > 0:
+                topn_mask[topn_indices] = True
+            topn_mask = topn_mask.reshape(feat_norm.shape)
+            
+            # Create color-coded visualization for top N values
+            norm_colored = feat_norm.clone()
+            norm_colored[~topn_mask] = 0  # Set non-topN to 0
+            
+            # Use a discrete colormap for better distinction
+            colors = plt.cm.get_cmap('tab20')(np.linspace(0, 1, min(top_n, 20)))  # Use tab20 colormap for distinct colors
+            
+            # Create custom visualization showing top N with different colors
+            topn_visual = np.zeros((*feat_norm.shape, 3))  # RGB image
+            topn_coords = torch.nonzero(topn_mask)
+            
+            for i, coord in enumerate(topn_coords):
+                y, x = coord[0].item(), coord[1].item()
+                color_idx = i % len(colors)
+                topn_visual[y, x] = colors[color_idx][:3]  # Use RGB, ignore alpha
+            
+            ax2.imshow(topn_visual)
+            ax2.set_title(f'Top {top_n} Norm Values (Excluding 5% Border, Different Colors)')
+            ax2.axis('off')
+            
+            # 3. Norm values with top N highlighted in overlay
+            im3 = ax3.imshow(feat_norm, cmap='gray', alpha=0.7)
+            
+            # Draw border exclusion area
+            ax3.add_patch(plt.Rectangle((0, 0), W, border_h, fill=False, edgecolor='red', linewidth=2, linestyle='--', alpha=0.7))
+            ax3.add_patch(plt.Rectangle((0, H-border_h), W, border_h, fill=False, edgecolor='red', linewidth=2, linestyle='--', alpha=0.7))
+            ax3.add_patch(plt.Rectangle((0, 0), border_w, H, fill=False, edgecolor='red', linewidth=2, linestyle='--', alpha=0.7))
+            ax3.add_patch(plt.Rectangle((W-border_w, 0), border_w, H, fill=False, edgecolor='red', linewidth=2, linestyle='--', alpha=0.7))
+            
+            # Overlay top N positions with colored dots
+            for i, coord in enumerate(topn_coords):
+                y, x = coord[0].item(), coord[1].item()
+                color_idx = i % len(colors)
+                ax3.scatter(x, y, c=[colors[color_idx]], s=50, marker='o', edgecolors='white', linewidth=1)
+                if i < 20:  # Only show numbers for first 20
+                    ax3.text(x, y, str(i+1), fontsize=8, ha='center', va='center', color='white', weight='bold')
+            
+            plt.colorbar(im3, ax=ax3)
+            ax3.set_title(f'Norm with Top {top_n} Highlighted (Excluding 5% Border, Numbers 1-20)')
+            
+            # 4. Bar chart of top N norm values (show only first 20 for readability)
+            if len(topn_indices) > 0:
+                topn_values = feat_norm_flat[topn_indices].numpy()
+                display_count = min(20, len(topn_values))
+                bars = ax4.bar(range(display_count), topn_values[:display_count], 
+                              color=[colors[i % len(colors)] for i in range(display_count)])
+                ax4.set_title(f'Top {display_count}/{top_n} Norm Values (Excluding 5% Border)')
+                ax4.set_xlabel('Rank')
+                ax4.set_ylabel('Norm Value')
+                ax4.grid(True, alpha=0.3)
+                
+                # Add value labels on bars
+                for i, (bar, val) in enumerate(zip(bars, topn_values[:display_count])):
+                    ax4.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.001, 
+                            f'{val:.3f}', ha='center', va='bottom', fontsize=8, rotation=45)
+            else:
+                ax4.text(0.5, 0.5, 'No valid values found', ha='center', va='center', transform=ax4.transAxes)
+                ax4.set_title(f'Top {top_n} Norm Values (Excluding 5% Border) - No Data')
+            
+            plt.tight_layout()
+            plt.savefig(f'debug_visualizations/backbone_features_scale{scale_idx}_norm_analysis.png', dpi=150, bbox_inches='tight')
+            plt.close()
+            
+            # Print top N norm values and their positions (show first 20)
+            print(f"\nScale {scale_idx} - Top {top_n} norm values (excluding 5% border, showing first 20):")
+            if len(topn_indices) > 0:
+                for i, (idx, coord) in enumerate(zip(topn_indices[:20], topn_coords[:20])):
+                    y, x = coord[0].item(), coord[1].item()
+                    val = feat_norm_flat[idx].item()
+                    print(f"  Rank {i+1}: Value={val:.4f}, Position=({y}, {x})")
+            else:
+                print("  No valid values found after excluding border pixels")
+            
+            # Visualize feature mean across channels
+            feat_mean = torch.mean(feat_vis, dim=0)  # [H, W]
+            plt.figure(figsize=(8, 6))
+            im = plt.imshow(feat_mean, cmap='RdBu_r')
+            plt.colorbar(im)
+            plt.title(f'Backbone Features Scale {scale_idx} - Channel Mean')
+            plt.savefig(f'debug_visualizations/backbone_features_scale{scale_idx}_mean.png', dpi=150, bbox_inches='tight')
+            plt.close()
+
+    def _visualize_trans_features(self, trans_features, viz_view=0):
+        """Visualize transformer output features for debugging"""
+        import matplotlib.pyplot as plt
+        import numpy as np
+        import os
+        os.makedirs('debug_visualizations', exist_ok=True)
+        
+        # trans_features is [B, V, C, H, W]
+        B, V, C, H, W = trans_features.shape
+        trans_features_reshaped = trans_features.view(B, V, C, H, W)
+        
+        # Visualize first batch, first view
+        feat_vis = trans_features_reshaped[0, viz_view].detach().cpu() # [C, H, W]
+        
+        print(f"Transformer feature shape: {trans_features.shape}")
+        print(f"Transformer feature range: [{trans_features.min().item():.4f}, {trans_features.max().item():.4f}]")
+        print(f"Transformer feature mean: {trans_features.mean().item():.4f}")
+        print(f"Transformer feature std: {trans_features.std().item():.4f}")
+        
+        # Visualize feature channels (show first 16 channels in a 4x4 grid)
+        num_channels_to_show = min(16, feat_vis.shape[0])
+        if num_channels_to_show > 0:
+            rows = 4
+            cols = 4
+            fig, axes_raw = plt.subplots(rows, cols, figsize=(12, 12))
+            
+            # Convert to list for consistent handling
+            if isinstance(axes_raw, np.ndarray):
+                axes_list = list(axes_raw.flatten())
+            else:
+                axes_list = [axes_raw]
+            
+            for i in range(num_channels_to_show):
+                ax = axes_list[i]
+                im = ax.imshow(feat_vis[i], cmap='viridis')
+                ax.set_title(f'Ch {i}')
+                ax.axis('off')
+                plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+            
+            # Hide unused subplots
+            for i in range(num_channels_to_show, len(axes_list)):
+                axes_list[i].axis('off')
+            
+            plt.tight_layout()
+            plt.savefig(f'debug_visualizations/transformer_features_channels.png', dpi=150, bbox_inches='tight')
+            plt.close()
+        
+        # Visualize feature norm across channels with top N values highlighted
+        top_n = 20
+        feat_norm = torch.norm(feat_vis, dim=0) # [H, W]
+        
+        # Create border mask to exclude edge pixels (5% border on each side)
+        border_ratio = 0.05
+        border_h = max(1, int(H * border_ratio))
+        border_w = max(1, int(W * border_ratio))
+        
+        # Create mask excluding border pixels
+        border_mask = torch.ones_like(feat_norm, dtype=torch.bool)
+        border_mask[:border_h, :] = False  # top border
+        border_mask[-border_h:, :] = False  # bottom border
+        border_mask[:, :border_w] = False  # left border
+        border_mask[:, -border_w:] = False  # right border
+        
+        # Apply border mask to norm values for analysis
+        feat_norm_masked = feat_norm.clone()
+        feat_norm_masked[~border_mask] = -float('inf') # Set border pixels to very low value so they won't be selected
+        
+        # Create a figure with multiple visualizations
+        fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(16, 12))
+        
+        # 1. Regular norm visualization
+        im1 = ax1.imshow(feat_norm, cmap='hot')
+        plt.colorbar(im1, ax=ax1)
+        ax1.set_title(f'Transformer Features - L2 Norm')
+        
+        # 2. Top N norm values with different colors (excluding border pixels)
+        feat_norm_flat = feat_norm_masked.flatten()
+        valid_indices = torch.where(feat_norm_flat != -float('inf'))[0]
+        valid_values = feat_norm_flat[valid_indices]
+        
+        if len(valid_values) > 0:
+            topn_indices_valid = torch.topk(valid_values, k=min(top_n, len(valid_values))).indices
+            topn_indices = valid_indices[topn_indices_valid]
+        else:
+            topn_indices = torch.tensor([], dtype=torch.long)
+        
+        # Create a mask for top N values
+        topn_mask = torch.zeros_like(feat_norm_flat, dtype=torch.bool)
+        if len(topn_indices) > 0:
+            topn_mask[topn_indices] = True
+        topn_mask = topn_mask.reshape(feat_norm.shape)
+        
+        # Create color-coded visualization for top N values
+        norm_colored = feat_norm.clone()
+        norm_colored[~topn_mask] = 0 # Set non-topN to 0
+        
+        # Use a discrete colormap for better distinction
+        colors = plt.cm.get_cmap('tab20')(np.linspace(0, 1, min(top_n, 20))) # Use tab20 colormap for distinct colors
+        
+        # Create custom visualization showing top N with different colors
+        topn_visual = np.zeros((*feat_norm.shape, 3)) # RGB image
+        topn_coords = torch.nonzero(topn_mask)
+        
+        for i, coord in enumerate(topn_coords):
+            y, x = coord[0].item(), coord[1].item()
+            color_idx = i % len(colors)
+            topn_visual[y, x] = colors[color_idx][:3] # Use RGB, ignore alpha
+        
+        ax2.imshow(topn_visual)
+        ax2.set_title(f'Top {top_n} Norm Values (Excluding 5% Border, Different Colors)')
+        ax2.axis('off')
+        
+        # 3. Norm values with top N highlighted in overlay
+        im3 = ax3.imshow(feat_norm, cmap='gray', alpha=0.7)
+        
+        # Draw border exclusion area
+        ax3.add_patch(plt.Rectangle((0, 0), W, border_h, fill=False, edgecolor='red', linewidth=2, linestyle='--', alpha=0.7))
+        ax3.add_patch(plt.Rectangle((0, H-border_h), W, border_h, fill=False, edgecolor='red', linewidth=2, linestyle='--', alpha=0.7))
+        ax3.add_patch(plt.Rectangle((0, 0), border_w, H, fill=False, edgecolor='red', linewidth=2, linestyle='--', alpha=0.7))
+        ax3.add_patch(plt.Rectangle((W-border_w, 0), border_w, H, fill=False, edgecolor='red', linewidth=2, linestyle='--', alpha=0.7))
+        
+        # Overlay top N positions with colored dots
+        for i, coord in enumerate(topn_coords):
+            y, x = coord[0].item(), coord[1].item()
+            color_idx = i % len(colors)
+            ax3.scatter(x, y, c=[colors[color_idx]], s=50, marker='o', edgecolors='white', linewidth=1)
+            if i < 20: # Only show numbers for first 20
+                ax3.text(x, y, str(i+1), fontsize=8, ha='center', va='center', color='white', weight='bold')
+        
+        plt.colorbar(im3, ax=ax3)
+        ax3.set_title(f'Norm with Top {top_n} Highlighted (Excluding 5% Border, Numbers 1-20)')
+        
+        # 4. Bar chart of top N norm values (show only first 20 for readability)
+        if len(topn_indices) > 0:
+            topn_values = feat_norm_flat[topn_indices].numpy()
+            display_count = min(20, len(topn_values))
+            bars = ax4.bar(range(display_count), topn_values[:display_count], 
+                          color=[colors[i % len(colors)] for i in range(display_count)])
+            ax4.set_title(f'Top {display_count}/{top_n} Norm Values (Excluding 5% Border)')
+            ax4.set_xlabel('Rank')
+            ax4.set_ylabel('Norm Value')
+            ax4.grid(True, alpha=0.3)
+            
+            # Add value labels on bars
+            for i, (bar, val) in enumerate(zip(bars, topn_values[:display_count])):
+                ax4.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.001, 
+                        f'{val:.3f}', ha='center', va='bottom', fontsize=8, rotation=45)
+        else:
+            ax4.text(0.5, 0.5, 'No valid values found', ha='center', va='center', transform=ax4.transAxes)
+            ax4.set_title(f'Top {top_n} Norm Values (Excluding 5% Border) - No Data')
+        
+        plt.tight_layout()
+        plt.savefig(f'debug_visualizations/transformer_features_norm_analysis.png', dpi=150, bbox_inches='tight')
+        plt.close()
+        
+        # Print top N norm values and their positions (show first 20)
+        print(f"\nTransformer - Top {top_n} norm values (excluding 5% border, showing first 20):")
+        if len(topn_indices) > 0:
+            for i, (idx, coord) in enumerate(zip(topn_indices[:20], topn_coords[:20])):
+                y, x = coord[0].item(), coord[1].item()
+                val = feat_norm_flat[idx].item()
+                print(f"  Rank {i+1}: Value={val:.4f}, Position=({y}, {x})")
+        else:
+            print("  No valid values found after excluding border pixels")
+        
+        # Visualize feature mean across channels
+        feat_mean = torch.mean(feat_vis, dim=0) # [H, W]
+        plt.figure(figsize=(8, 6))
+        im = plt.imshow(feat_mean, cmap='RdBu_r')
+        plt.colorbar(im)
+        plt.title(f'Transformer - Channel Mean')
+        plt.savefig(f'debug_visualizations/transformer_features_mean.png', dpi=150, bbox_inches='tight')
+        plt.close()
 
     def forward(
         self,
@@ -199,7 +622,7 @@ class BackbonePyramid(torch.nn.Module):
             dim=3,
         )
         intri_org = intri.clone()
-        proj_matrices = {"stage{}".format(i): 0 for i in range(1, 5)}
+        proj_matrices = {}  # Initialize as empty dict instead of dict with int values
         # four stages and the intrinsics scale by 2x
         for i in range(1, 5):
             intri[..., 0, :] = intri_org[..., 0, :] * w / 2 ** (4 - i)

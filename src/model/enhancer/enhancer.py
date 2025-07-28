@@ -15,7 +15,14 @@ class Enhancer(nn.Module, ABC, Generic[T]):
     def __init__(self, cfg: T) -> None:
         super().__init__()
         self.cfg = cfg
-
+    @abstractmethod
+    def pose_enhance(self, context: BatchedViews) -> BatchedViews:
+        pass
+    
+    @abstractmethod
+    def feat_enhance(self, context: BatchedViews) -> BatchedViews:
+        pass
+    
     @abstractmethod
     def forward(
         self,
