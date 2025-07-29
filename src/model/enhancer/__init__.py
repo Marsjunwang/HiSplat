@@ -1,24 +1,26 @@
 from typing import Optional
 
-from .enhancer import Enhancer
-from .encoder_costvolume_pyramid import (
-    EncoderCostVolumeCfgPyramid,
-    EncoderCostVolumePyramid,
+from .enhancer import Enhancer, PoseEnhancer, FeatEnhancer
+from .pose_modified_panormic_feat import (
+    PoseModifiedPanormicFeatCfg,
+    PoseModifiedPanormicFeatEnhancer,
 )
-from .visualization.encoder_visualizer import EncoderVisualizer
-from .visualization.encoder_visualizer_costvolume import EncoderVisualizerCostVolume
+from .visualization.enhancer_visualizer import EnhancerVisualizer
+from .pose_enhancer import PoseSeparateEnhancer, PoseEnhancerCfg
+from .feat_enhancer import PanormicFeatEnhancer, FeatEnhancerCfg
+from .factory import get_pose_enhancer, get_feat_enhancer
+
+from torch import nn
+
 
 ENHANCERS = {
-    "costvolume_pyramid": (EncoderCostVolumePyramid, EncoderVisualizerCostVolume),
+    "pose_modified_panormic_feat": (PoseModifiedPanormicFeatEnhancer, None),
 }
 
-EncoderCfg = EncoderCostVolumeCfgPyramid
-
-
-def get_enhancer(cfg: EncoderCfg, decoder) -> tuple[Encoder, Optional[EncoderVisualizer]]:
-    encoder, visualizer = ENCODERS[cfg.name]
-    encoder = encoder(cfg)
-    encoder.decoder = decoder
-    if visualizer is not None:
-        visualizer = visualizer(cfg.visualizer, encoder)
-    return encoder, visualizer
+EnhancerCfg = PoseModifiedPanormicFeatCfg
+def get_enhancer(cfg: EnhancerCfg) -> tuple[Enhancer, Optional[EnhancerVisualizer]]:
+    enhancer, enhancer_visualizer = ENHANCERS[cfg.name]
+    enhancer = enhancer(cfg)
+    if enhancer_visualizer is not None:
+        enhancer_visualizer = enhancer_visualizer(cfg.visualizer, enhancer)
+    return enhancer, enhancer_visualizer

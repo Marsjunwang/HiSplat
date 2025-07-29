@@ -1,7 +1,8 @@
 from abc import ABC, abstractmethod
-from typing import Generic, TypeVar
+from typing import Generic, TypeVar, List
 
-from torch import nn
+from jaxtyping import Float
+from torch import Tensor, nn
 
 from ...dataset.types import BatchedViews, DataShim
 
@@ -34,3 +35,25 @@ class Enhancer(nn.Module, ABC, Generic[T]):
     def get_data_shim(self) -> DataShim:
         """The default shim doesn't modify the batch."""
         return lambda x: x
+    
+class PoseEnhancer(nn.Module, ABC, Generic[T]):
+    cfg: T
+    
+    def __init__(self, cfg: T) -> None:
+        super().__init__()
+        self.cfg = cfg
+    
+    @abstractmethod
+    def forward(self, context: BatchedViews, features: List[Float[Tensor, "b c h w"]]) -> BatchedViews:
+        pass
+    
+class FeatEnhancer(nn.Module, ABC, Generic[T]):
+    cfg: T
+    
+    def __init__(self, cfg: T) -> None:
+        super().__init__()
+        self.cfg = cfg
+    
+    @abstractmethod
+    def forward(self, context: BatchedViews, features: List[Float[Tensor, "b c h w"]]) -> BatchedViews:
+        pass

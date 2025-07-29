@@ -9,6 +9,7 @@ from .dataset.data_module import DataLoaderCfg, DatasetCfg
 from .loss import LossCfgWrapper
 from .model.decoder import DecoderCfg
 from .model.encoder import EncoderCfg
+from .model.enhancer import EnhancerCfg
 from .model.model_wrapper import OptimizerCfg, TestCfg, TrainCfg
 
 
@@ -24,7 +25,7 @@ class CheckpointingCfg:
 class ModelCfg:
     decoder: DecoderCfg
     encoder: EncoderCfg
-
+    enhancer: EnhancerCfg
 
 @dataclass
 class TrainerCfg:

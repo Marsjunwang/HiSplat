@@ -1,14 +1,20 @@
-name: enhancer
+name: pose_modified_panormic_feat
+enhance_type: "both"
 
 pose_enhancer:
-  encoder:
+  name: pose_separate
+  pose_encoder:
     num_layers: 18
     weights_init: "pretrained"
     num_input_images: 2
-  decoder:
-    num_ch_enc: 128
+    pretrained: False
+  pose_decoder:
     num_input_features: 1
     num_frames_to_predict_for: 2
     stride: 1
   
-feature_enhancer: Null
+feat_enhancer:
+  name: panormic_feat
+  panormic_radius: 0.5
+  panormic_resolution: [1.0, 1.0]
+  

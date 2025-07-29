@@ -32,6 +32,8 @@ with install_import_hook(
     from src.model.decoder import get_decoder
     from src.model.encoder import get_encoder
     from src.model.model_wrapper import ModelWrapper
+    
+    from src.model.enhancer import get_enhancer
 
 
 def cyan(text: str) -> str:
@@ -125,6 +127,8 @@ def train(cfg_dict: DictConfig):
     torch.manual_seed(cfg_dict.seed + trainer.global_rank)
     decoder = get_decoder(cfg.model.decoder, cfg.dataset)
     encoder, encoder_visualizer = get_encoder(cfg.model.encoder, decoder)
+    if cfg.model.enhancer is not None:
+        enhancer, enhancer_visualizer = get_enhancer(cfg.model.enhancer)
     if cfg.mode == "train" and checkpoint_path is not None:
         ckpt = torch.load(checkpoint_path)["state_dict"]
         ckpt = {".".join(k.split(".")[1:]): v for k, v in ckpt.items()}
