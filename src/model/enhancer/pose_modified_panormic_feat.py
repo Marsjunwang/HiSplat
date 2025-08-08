@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import List, Dict
+from typing import List, Dict, Sequence
 
 from .enhancer import Enhancer, PoseEnhancer, FeatEnhancer
 
@@ -31,13 +31,24 @@ class PoseModifiedPanormicFeatEnhancer(Enhancer):
         self.feat_enhancer = get_feat_enhancer(cfg.feat_enhancer)
         
     def pose_enhance(self, context, features):
-        pass
+        context, features = self.pose_enhancer(context, features)
+        return context, features
     
     def feat_enhance(self, context, features):
-        pass
+        context, features = self.feat_enhancer(context, features)
+        return context, features
     
     def forward(self, 
-                context: Dict,
-                features: List,
-                ):
-        pass
+                context,
+                features,
+                ) -> tuple[dict, Sequence]:
+        if self.enhance_type == "pose":
+            context, features = self.pose_enhance(context, features)
+        elif self.enhance_type == "feat":
+            context, features = self.feat_enhance(context, features)
+        elif self.enhance_type == "both":
+            context, features = self.pose_enhance(context, features)
+            context, features = self.feat_enhance(context, features)
+        else:
+            raise ValueError(f"Invalid enhance_type: {self.enhance_type}")
+        return context, features

@@ -167,6 +167,10 @@ class BackbonePyramid(torch.nn.Module):
         imgs = imgs.reshape(B * V, 3, H, W)
         dino_feature = self.dino(org_imgs)
         
+        # save context image for comapre
+        if hasattr(self, 'visualize_context') and self.visualize_context:
+            self._visualize_context(context)
+            
         # Visualize dino features for debugging
         if hasattr(self, 'visualize_dino') and self.visualize_dino:
             self._visualize_dino_features(dino_feature)
@@ -190,9 +194,44 @@ class BackbonePyramid(torch.nn.Module):
         
         return (out_feature, trans_features)
 
+    def _visualize_context(self, context):
+        """Save input context images for quick visual debugging.
+        Expects context['image'] of shape [B, V, C, H, W] with values in [0, 1]."""
+        import os
+        import matplotlib.pyplot as plt
+        import numpy as np
+        os.makedirs('debug_visualizations', exist_ok=True)
+        if "image" not in context:
+            return
+        images = context["image"].detach().cpu()
+        if images.ndim != 5:
+            print(f"Unexpected context['image'] ndim={images.ndim}, expected 5")
+            return
+        B, V, C, H, W = images.shape
+        print(f"Context image shape: {tuple(images.shape)}  range: [{images.min().item():.4f}, {images.max().item():.4f}]")
+        # Clamp to [0,1] for visualization
+        images = images.clamp(0, 1)
+        max_batches_to_save = min(B, 2)
+        for b in range(max_batches_to_save):
+            fig, axes = plt.subplots(1, V, figsize=(5 * V, 5))
+            if isinstance(axes, np.ndarray):
+                axes_list = list(axes.flatten())
+            else:
+                axes_list = [axes]
+            for v in range(V):
+                img = images[b, v].permute(1, 2, 0).numpy()  # H, W, C
+                ax = axes_list[v]
+                ax.imshow(img)
+                ax.set_title(f'b{b} v{v}')
+                ax.axis('off')
+            plt.tight_layout()
+            plt.savefig(f'debug_visualizations/context_b{b}.png', dpi=150, bbox_inches='tight')
+            plt.close()
+
     def _visualize_dino_features(self, dino_feature):
         """Visualize DINO features for debugging"""
         import matplotlib.pyplot as plt
+        import numpy as np
         import os
         os.makedirs('debug_visualizations', exist_ok=True)
         
@@ -228,14 +267,234 @@ class BackbonePyramid(torch.nn.Module):
         print(f"DINO feature mean: {dino_feature.mean().item():.4f}")
         print(f"DINO feature std: {dino_feature.std().item():.4f}")
         
-        # Save feature norm visualization
+        # Save feature norm visualization with hybrid top selection overlays
         feat_norm = torch.norm(feat_vis, dim=0)  # [H, W]
-        plt.figure(figsize=(8, 6))
-        plt.imshow(feat_norm, cmap='hot')
-        plt.colorbar()
-        plt.title('DINO Feature L2 Norm')
+        top_n = 256
+        border_ratio = 0.05
+
+        # 2x2 panel similar to other visualizations
+        fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(16, 12))
+
+        # 1. Regular norm visualization
+        im1 = ax1.imshow(feat_norm, cmap='hot')
+        plt.colorbar(im1, ax=ax1)
+        ax1.set_title('DINO Features - L2 Norm')
+
+        # 2. Hybrid top selection: part global, part per-region
+        topn_indices_flat, topn_mask, topn_coords = self._select_top_indices_hybrid(
+            feat_norm,
+            top_n=top_n,
+            border_ratio=border_ratio,
+            global_ratio=0.125,
+            region_rows=8,
+            region_cols=8,
+        )
+
+        # Use a discrete colormap for better distinction
+        colors = plt.cm.get_cmap('tab20')(np.linspace(0, 1, min(top_n, 20)))
+
+        # Create custom visualization showing top N with different colors
+        topn_visual = np.zeros((*feat_norm.shape, 3))  # RGB image
+        for i, coord in enumerate(topn_coords):
+            y, x = coord[0].item(), coord[1].item()
+            color_idx = i % len(colors)
+            topn_visual[y, x] = colors[color_idx][:3]  # Use RGB, ignore alpha
+
+        ax2.imshow(topn_visual)
+        ax2.set_title(f'Top {top_n} Norm Values (Excluding 5% Border, Different Colors)')
+        ax2.axis('off')
+
+        # 3. Norm values with top N highlighted in overlay
+        im3 = ax3.imshow(feat_norm, cmap='gray', alpha=0.7)
+
+        # Draw border exclusion area
+        H, W = feat_norm.shape
+        border_h = max(1, int(H * border_ratio))
+        border_w = max(1, int(W * border_ratio))
+        ax3.add_patch(plt.Rectangle((0, 0), W, border_h, fill=False, edgecolor='red', linewidth=2, linestyle='--', alpha=0.7))
+        ax3.add_patch(plt.Rectangle((0, H-border_h), W, border_h, fill=False, edgecolor='red', linewidth=2, linestyle='--', alpha=0.7))
+        ax3.add_patch(plt.Rectangle((0, 0), border_w, H, fill=False, edgecolor='red', linewidth=2, linestyle='--', alpha=0.7))
+        ax3.add_patch(plt.Rectangle((W-border_w, 0), border_w, H, fill=False, edgecolor='red', linewidth=2, linestyle='--', alpha=0.7))
+
+        # Overlay top N positions with colored dots
+        for i, coord in enumerate(topn_coords):
+            y, x = coord[0].item(), coord[1].item()
+            color_idx = i % len(colors)
+            ax3.scatter(x, y, c=[colors[color_idx]], s=50, marker='o', edgecolors='white', linewidth=1)
+            if i < 20:  # Only show numbers for first 20
+                ax3.text(x, y, str(i+1), fontsize=8, ha='center', va='center', color='white', weight='bold')
+
+        plt.colorbar(im3, ax=ax3)
+        ax3.set_title(f'Norm with Top {top_n} Highlighted (Excluding 5% Border, Numbers 1-20)')
+
+        # 4. Bar chart of top N norm values (show only first 20 for readability)
+        if len(topn_indices_flat) > 0:
+            feat_norm_flat = feat_norm.flatten()
+            topn_values = feat_norm_flat[topn_indices_flat].detach().cpu().numpy()
+            display_count = min(20, len(topn_values))
+            bars = ax4.bar(range(display_count), topn_values[:display_count], 
+                          color=[colors[i % len(colors)] for i in range(display_count)])
+            ax4.set_title(f'Top {display_count}/{top_n} Norm Values (Excluding 5% Border)')
+            ax4.set_xlabel('Rank')
+            ax4.set_ylabel('Norm Value')
+            ax4.grid(True, alpha=0.3)
+            # Add value labels on bars
+            for i, (bar, val) in enumerate(zip(bars, topn_values[:display_count])):
+                ax4.text(bar.get_x() + bar.get_width()/2, bar.get_height() + 0.001, 
+                        f'{val:.3f}', ha='center', va='bottom', fontsize=8, rotation=45)
+        else:
+            ax4.text(0.5, 0.5, 'No valid values found', ha='center', va='center', transform=ax4.transAxes)
+            ax4.set_title(f'Top {top_n} Norm Values (Excluding 5% Border) - No Data')
+
+        plt.tight_layout()
         plt.savefig('debug_visualizations/dino_feature_norm.png', dpi=150)
         plt.close()
+
+        # Print top N norm values and their positions (show first 20)
+        print(f"\nDINO - Top {top_n} norm values (excluding 5% border, showing first 20):")
+        if len(topn_indices_flat) > 0:
+            feat_norm_flat = feat_norm.flatten()
+            for i, (idx, coord) in enumerate(zip(topn_indices_flat[:20], topn_coords[:20])):
+                y, x = coord[0].item(), coord[1].item()
+                val = feat_norm_flat[idx].item()
+                print(f"  Rank {i+1}: Value={val:.4f}, Position=({y}, {x})")
+        else:
+            print("  No valid values found after excluding border pixels")
+
+    def _select_top_indices_hybrid(
+        self,
+        feat_norm: torch.Tensor,
+        top_n: int,
+        border_ratio: float = 0.05,
+        global_ratio: float = 0.5,
+        region_rows: int = 8,
+        region_cols: int = 8,
+    ):
+        """Select top indices by combining global top-k and per-region top-k.
+
+        - Excludes a border defined by border_ratio on each side
+        - Picks round(top_n * global_ratio) globally
+        - Splits the rest evenly across a grid of region_rows x region_cols
+        - Ensures unique indices across selections and handles insufficient valid points
+        Returns (topn_indices_flat, topn_mask, topn_coords)
+        """
+        H, W = feat_norm.shape
+        device = feat_norm.device
+
+        # Build border mask
+        border_h = max(1, int(H * border_ratio))
+        border_w = max(1, int(W * border_ratio))
+        valid_mask = torch.ones((H, W), dtype=torch.bool, device=device)
+        valid_mask[:border_h, :] = False
+        valid_mask[-border_h:, :] = False
+        valid_mask[:, :border_w] = False
+        valid_mask[:, -border_w:] = False
+
+        feat_norm_flat = feat_norm.flatten()
+        valid_mask_flat = valid_mask.flatten()
+
+        # Determine budgets
+        top_n = int(max(0, top_n))
+        if top_n == 0:
+            empty = torch.tensor([], dtype=torch.long, device=device)
+            empty_mask = torch.zeros_like(valid_mask_flat, dtype=torch.bool)
+            return empty, empty_mask.reshape(H, W), torch.zeros((0, 2), dtype=torch.long)
+
+        global_budget = int(round(top_n * global_ratio))
+        region_budget = max(0, top_n - global_budget)
+
+        selected_mask_flat = torch.zeros_like(valid_mask_flat, dtype=torch.bool)
+
+        # Global selection
+        if global_budget > 0:
+            # Mask invalid positions by setting to -inf
+            scores = feat_norm_flat.clone()
+            scores[~valid_mask_flat] = -float('inf')
+            k = min(global_budget, int(valid_mask_flat.sum().item()))
+            if k > 0:
+                global_indices = torch.topk(scores, k=k).indices
+                selected_mask_flat[global_indices] = True
+
+        # Per-region selection
+        if region_budget > 0:
+            # Adjust grid if too fine for current H, W
+            region_rows_eff = max(1, min(region_rows, H))
+            region_cols_eff = max(1, min(region_cols, W))
+            # Roughly even allocation
+            per_region = region_budget // (region_rows_eff * region_cols_eff)
+            remainder = region_budget - per_region * region_rows_eff * region_cols_eff
+
+            # Build exact integer partitions to avoid rounding bias from linspace
+            base_h = H // region_rows_eff
+            extra_h = H % region_rows_eff
+            row_heights = [base_h + 1 if i < extra_h else base_h for i in range(region_rows_eff)]
+            y_starts = [0]
+            for rh in row_heights:
+                y_starts.append(y_starts[-1] + rh)
+
+            base_w = W // region_cols_eff
+            extra_w = W % region_cols_eff
+            col_widths = [base_w + 1 if i < extra_w else base_w for i in range(region_cols_eff)]
+            x_starts = [0]
+            for cw in col_widths:
+                x_starts.append(x_starts[-1] + cw)
+
+            idx_list = []
+            for ry in range(region_rows_eff):
+                for rx in range(region_cols_eff):
+                    y0, y1 = y_starts[ry], y_starts[ry + 1]
+                    x0, x1 = x_starts[rx], x_starts[rx + 1]
+                    region_h = max(1, y1 - y0)
+                    region_w = max(1, x1 - x0)
+                    # Build region mask
+                    region_mask = torch.zeros((H, W), dtype=torch.bool, device=device)
+                    region_mask[y0:y0 + region_h, x0:x0 + region_w] = True
+                    # Valid and not already selected
+                    mask = region_mask & valid_mask & (~selected_mask_flat.reshape(H, W))
+                    mask_flat = mask.flatten()
+                    # Quota for this region (distribute remainders first regions)
+                    k_region = per_region + (1 if remainder > 0 else 0)
+                    if remainder > 0:
+                        remainder -= 1
+                    if k_region <= 0:
+                        continue
+                    # Get top-k within region
+                    scores = feat_norm_flat.clone()
+                    scores[~mask_flat] = -float('inf')
+                    k_take = min(k_region, int(mask_flat.sum().item()))
+                    if k_take > 0:
+                        region_top = torch.topk(scores, k=k_take).indices
+                        idx_list.append(region_top)
+                        selected_mask_flat[region_top] = True
+
+            if len(idx_list) > 0:
+                region_indices = torch.cat(idx_list, dim=0)
+            else:
+                region_indices = torch.tensor([], dtype=torch.long, device=device)
+        else:
+            region_indices = torch.tensor([], dtype=torch.long, device=device)
+
+        # Combine
+        topn_indices_flat = torch.nonzero(selected_mask_flat, as_tuple=False).flatten()
+        # If still short due to insufficient valid points, backfill by next best overall
+        if topn_indices_flat.numel() < top_n:
+            deficit = top_n - topn_indices_flat.numel()
+            scores = feat_norm_flat.clone()
+            scores[~valid_mask_flat] = -float('inf')
+            scores[selected_mask_flat] = -float('inf')
+            k_backfill = min(deficit, int((~torch.isinf(scores)).sum().item()))
+            if k_backfill > 0:
+                backfill = torch.topk(scores, k=k_backfill).indices
+                selected_mask_flat[backfill] = True
+                topn_indices_flat = torch.nonzero(selected_mask_flat, as_tuple=False).flatten()
+
+        # Build mask and coords
+        topn_mask = torch.zeros_like(valid_mask_flat, dtype=torch.bool)
+        topn_mask[topn_indices_flat] = True
+        topn_mask_2d = topn_mask.reshape(H, W)
+        y_coords, x_coords = torch.nonzero(topn_mask_2d, as_tuple=True)
+        topn_coords = torch.stack([y_coords, x_coords], dim=1)
+        return topn_indices_flat, topn_mask_2d, topn_coords
 
     def _visualize_backbone_features(self, out_feature, batch_size, num_views, viz_view=0):
         """Visualize backbone output features for debugging"""
@@ -291,7 +550,7 @@ class BackbonePyramid(torch.nn.Module):
             
             # Visualize feature norm across channels with top N values highlighted
             # Use formula: 20 * 2^scale_idx
-            top_n = 20 * (2 ** scale_idx)
+            top_n = 256
             
             feat_norm = torch.norm(feat_vis, dim=0)  # [H, W]
             
@@ -319,22 +578,15 @@ class BackbonePyramid(torch.nn.Module):
             plt.colorbar(im1, ax=ax1)
             ax1.set_title(f'Backbone Features Scale {scale_idx} - L2 Norm')
             
-            # 2. Top N norm values with different colors (excluding border pixels)
-            feat_norm_flat = feat_norm_masked.flatten()
-            valid_indices = torch.where(feat_norm_flat != -float('inf'))[0]
-            valid_values = feat_norm_flat[valid_indices]
-            
-            if len(valid_values) > 0:
-                topn_indices_valid = torch.topk(valid_values, k=min(top_n, len(valid_values))).indices
-                topn_indices = valid_indices[topn_indices_valid]
-            else:
-                topn_indices = torch.tensor([], dtype=torch.long)
-            
-            # Create a mask for top N values
-            topn_mask = torch.zeros_like(feat_norm_flat, dtype=torch.bool)
-            if len(topn_indices) > 0:
-                topn_mask[topn_indices] = True
-            topn_mask = topn_mask.reshape(feat_norm.shape)
+            # 2. Hybrid top selection: part global, part per-region
+            topn_indices_flat, topn_mask, topn_coords = self._select_top_indices_hybrid(
+                feat_norm,
+                top_n=top_n,
+                border_ratio=border_ratio,
+                global_ratio=0.125,
+                region_rows=8,
+                region_cols=8,
+            )
             
             # Create color-coded visualization for top N values
             norm_colored = feat_norm.clone()
@@ -345,8 +597,6 @@ class BackbonePyramid(torch.nn.Module):
             
             # Create custom visualization showing top N with different colors
             topn_visual = np.zeros((*feat_norm.shape, 3))  # RGB image
-            topn_coords = torch.nonzero(topn_mask)
-            
             for i, coord in enumerate(topn_coords):
                 y, x = coord[0].item(), coord[1].item()
                 color_idx = i % len(colors)
@@ -377,8 +627,9 @@ class BackbonePyramid(torch.nn.Module):
             ax3.set_title(f'Norm with Top {top_n} Highlighted (Excluding 5% Border, Numbers 1-20)')
             
             # 4. Bar chart of top N norm values (show only first 20 for readability)
-            if len(topn_indices) > 0:
-                topn_values = feat_norm_flat[topn_indices].numpy()
+            if len(topn_indices_flat) > 0:
+                feat_norm_flat = feat_norm.flatten()
+                topn_values = feat_norm_flat[topn_indices_flat].detach().cpu().numpy()
                 display_count = min(20, len(topn_values))
                 bars = ax4.bar(range(display_count), topn_values[:display_count], 
                               color=[colors[i % len(colors)] for i in range(display_count)])
@@ -401,8 +652,9 @@ class BackbonePyramid(torch.nn.Module):
             
             # Print top N norm values and their positions (show first 20)
             print(f"\nScale {scale_idx} - Top {top_n} norm values (excluding 5% border, showing first 20):")
-            if len(topn_indices) > 0:
-                for i, (idx, coord) in enumerate(zip(topn_indices[:20], topn_coords[:20])):
+            if len(topn_indices_flat) > 0:
+                feat_norm_flat = feat_norm.flatten()
+                for i, (idx, coord) in enumerate(zip(topn_indices_flat[:20], topn_coords[:20])):
                     y, x = coord[0].item(), coord[1].item()
                     val = feat_norm_flat[idx].item()
                     print(f"  Rank {i+1}: Value={val:.4f}, Position=({y}, {x})")
@@ -465,26 +717,10 @@ class BackbonePyramid(torch.nn.Module):
             plt.savefig(f'debug_visualizations/transformer_features_channels.png', dpi=150, bbox_inches='tight')
             plt.close()
         
-        # Visualize feature norm across channels with top N values highlighted
-        top_n = 20
+        # Visualize feature norm across channels with top N values highlighted (hybrid selection)
+        top_n = 256
         feat_norm = torch.norm(feat_vis, dim=0) # [H, W]
-        
-        # Create border mask to exclude edge pixels (5% border on each side)
         border_ratio = 0.05
-        border_h = max(1, int(H * border_ratio))
-        border_w = max(1, int(W * border_ratio))
-        
-        # Create mask excluding border pixels
-        border_mask = torch.ones_like(feat_norm, dtype=torch.bool)
-        border_mask[:border_h, :] = False  # top border
-        border_mask[-border_h:, :] = False  # bottom border
-        border_mask[:, :border_w] = False  # left border
-        border_mask[:, -border_w:] = False  # right border
-        
-        # Apply border mask to norm values for analysis
-        feat_norm_masked = feat_norm.clone()
-        feat_norm_masked[~border_mask] = -float('inf') # Set border pixels to very low value so they won't be selected
-        
         # Create a figure with multiple visualizations
         fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(16, 12))
         
@@ -493,22 +729,15 @@ class BackbonePyramid(torch.nn.Module):
         plt.colorbar(im1, ax=ax1)
         ax1.set_title(f'Transformer Features - L2 Norm')
         
-        # 2. Top N norm values with different colors (excluding border pixels)
-        feat_norm_flat = feat_norm_masked.flatten()
-        valid_indices = torch.where(feat_norm_flat != -float('inf'))[0]
-        valid_values = feat_norm_flat[valid_indices]
-        
-        if len(valid_values) > 0:
-            topn_indices_valid = torch.topk(valid_values, k=min(top_n, len(valid_values))).indices
-            topn_indices = valid_indices[topn_indices_valid]
-        else:
-            topn_indices = torch.tensor([], dtype=torch.long)
-        
-        # Create a mask for top N values
-        topn_mask = torch.zeros_like(feat_norm_flat, dtype=torch.bool)
-        if len(topn_indices) > 0:
-            topn_mask[topn_indices] = True
-        topn_mask = topn_mask.reshape(feat_norm.shape)
+        # 2. Hybrid top selection: part global, part per-region
+        topn_indices_flat, topn_mask, topn_coords = self._select_top_indices_hybrid(
+            feat_norm,
+            top_n=top_n,
+            border_ratio=border_ratio,
+            global_ratio=0.125,
+            region_rows=8,
+            region_cols=8,
+        )
         
         # Create color-coded visualization for top N values
         norm_colored = feat_norm.clone()
@@ -519,7 +748,6 @@ class BackbonePyramid(torch.nn.Module):
         
         # Create custom visualization showing top N with different colors
         topn_visual = np.zeros((*feat_norm.shape, 3)) # RGB image
-        topn_coords = torch.nonzero(topn_mask)
         
         for i, coord in enumerate(topn_coords):
             y, x = coord[0].item(), coord[1].item()
@@ -534,6 +762,9 @@ class BackbonePyramid(torch.nn.Module):
         im3 = ax3.imshow(feat_norm, cmap='gray', alpha=0.7)
         
         # Draw border exclusion area
+        H, W = feat_norm.shape
+        border_h = max(1, int(H * border_ratio))
+        border_w = max(1, int(W * border_ratio))
         ax3.add_patch(plt.Rectangle((0, 0), W, border_h, fill=False, edgecolor='red', linewidth=2, linestyle='--', alpha=0.7))
         ax3.add_patch(plt.Rectangle((0, H-border_h), W, border_h, fill=False, edgecolor='red', linewidth=2, linestyle='--', alpha=0.7))
         ax3.add_patch(plt.Rectangle((0, 0), border_w, H, fill=False, edgecolor='red', linewidth=2, linestyle='--', alpha=0.7))
@@ -551,8 +782,9 @@ class BackbonePyramid(torch.nn.Module):
         ax3.set_title(f'Norm with Top {top_n} Highlighted (Excluding 5% Border, Numbers 1-20)')
         
         # 4. Bar chart of top N norm values (show only first 20 for readability)
-        if len(topn_indices) > 0:
-            topn_values = feat_norm_flat[topn_indices].numpy()
+        if len(topn_indices_flat) > 0:
+            feat_norm_flat = feat_norm.flatten()
+            topn_values = feat_norm_flat[topn_indices_flat].detach().cpu().numpy()
             display_count = min(20, len(topn_values))
             bars = ax4.bar(range(display_count), topn_values[:display_count], 
                           color=[colors[i % len(colors)] for i in range(display_count)])
@@ -575,8 +807,9 @@ class BackbonePyramid(torch.nn.Module):
         
         # Print top N norm values and their positions (show first 20)
         print(f"\nTransformer - Top {top_n} norm values (excluding 5% border, showing first 20):")
-        if len(topn_indices) > 0:
-            for i, (idx, coord) in enumerate(zip(topn_indices[:20], topn_coords[:20])):
+        if len(topn_indices_flat) > 0:
+            feat_norm_flat = feat_norm.flatten()
+            for i, (idx, coord) in enumerate(zip(topn_indices_flat[:20], topn_coords[:20])):
                 y, x = coord[0].item(), coord[1].item()
                 val = feat_norm_flat[idx].item()
                 print(f"  Rank {i+1}: Value={val:.4f}, Position=({y}, {x})")

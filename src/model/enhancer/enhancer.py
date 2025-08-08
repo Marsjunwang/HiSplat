@@ -1,5 +1,5 @@
 from abc import ABC, abstractmethod
-from typing import Generic, TypeVar, List
+from typing import Generic, TypeVar, List, Sequence
 
 from jaxtyping import Float
 from torch import Tensor, nn
@@ -28,8 +28,8 @@ class Enhancer(nn.Module, ABC, Generic[T]):
     def forward(
         self,
         context: BatchedViews,
-        deterministic: bool,
-    ) -> BatchedViews:
+        features: Sequence,
+    ) -> tuple[BatchedViews, Sequence]:
         pass
 
     def get_data_shim(self) -> DataShim:
@@ -44,7 +44,7 @@ class PoseEnhancer(nn.Module, ABC, Generic[T]):
         self.cfg = cfg
     
     @abstractmethod
-    def forward(self, context: BatchedViews, features: List[Float[Tensor, "b c h w"]]) -> BatchedViews:
+    def forward(self, context: BatchedViews, features: Sequence[Float[Tensor, "b c h w"]]) -> BatchedViews:
         pass
     
 class FeatEnhancer(nn.Module, ABC, Generic[T]):
@@ -55,5 +55,5 @@ class FeatEnhancer(nn.Module, ABC, Generic[T]):
         self.cfg = cfg
     
     @abstractmethod
-    def forward(self, context: BatchedViews, features: List[Float[Tensor, "b c h w"]]) -> BatchedViews:
+    def forward(self, context: BatchedViews, features: Sequence[Float[Tensor, "b c h w"]]) -> BatchedViews:
         pass

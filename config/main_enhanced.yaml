@@ -52,7 +52,7 @@ checkpointing:
   # 15 checkpoints
   every_n_train_steps: 10000  # 5000
   save_top_k: -1
-  pretrained_model: null
+  pretrained_model: "checkpoints/hisplat_acid.ckpt"
 
 train:
   depth_mode: null

@@ -49,15 +49,16 @@ class EncoderCostVolumeCfgPyramid:
     depth_unet_attn_res: List[int]
     depth_unet_channel_mult: List[int]
 
-
+from src.model.enhancer import Enhancer
 class EncoderCostVolumePyramid(Encoder):
     backbone: BackbonePyramid
     depth_predictor: DepthPredictorMultiViewPyramid
     gaussian_adapter: GaussianAdapter
+    enhancer: Enhancer | None
 
-    def __init__(self, cfg) -> None:
+    def __init__(self, cfg, enhancer: Enhancer | None = None) -> None:
         super().__init__(cfg)
-
+        self.enhancer = enhancer
         # multi-view Transformer backbone
         self.backbone = BackbonePyramid(
             feature_channels=cfg.d_feature,
@@ -135,6 +136,9 @@ class EncoderCostVolumePyramid(Encoder):
             epipolar_kwargs=epipolar_kwargs,
         )
 
+        if self.enhancer is not None:
+            # Ensure features are a list for type-checked enhancers
+            context, features_list = self.enhancer(context, features_list)
         # Sample depths from the resulting features.
         in_feats = features_list
         extra_info = {}

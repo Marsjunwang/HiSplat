@@ -12,11 +12,17 @@ from collections import OrderedDict
 
 
 class PoseDecoder(nn.Module):
-    def __init__(self, num_ch_enc, num_input_features, num_frames_to_predict_for=None, stride=1):
+    def __init__(self, num_ch_enc, num_input_features, 
+                 num_frames_to_predict_for=None, 
+                 stride=1, 
+                 joint_pose=False,
+                 num_view_per_frame=1):
         super(PoseDecoder, self).__init__()
 
         self.num_ch_enc = num_ch_enc
         self.num_input_features = num_input_features
+        self.joint_pose = joint_pose
+        self.num_view_per_frame = num_view_per_frame
 
         if num_frames_to_predict_for is None:
             num_frames_to_predict_for = num_input_features - 1
@@ -32,15 +38,14 @@ class PoseDecoder(nn.Module):
 
         self.net = nn.ModuleList(list(self.convs.values()))
 
-    def forward(self, input_features, joint_pose=False):
-        B, C, H, W = input_features[0][-1].shape
-        if joint_pose:
-            last_features = [f[-1].reshape(-1, 6, C, H, W).mean(1) for f in input_features]
+    def forward(self, input_features):
+        B, C, H, W = input_features[-1].shape
+        if self.joint_pose:
+            last_features = input_features[-1].reshape(-1, self.num_view_per_frame, C, H, W).mean(1)
         else:
-            last_features = [f[-1] for f in input_features]
+            last_features = input_features[-1]
 
-        cat_features = [self.relu(self.convs["squeeze"](f)) for f in last_features]
-        cat_features = torch.cat(cat_features, 1)
+        cat_features = self.relu(self.convs["squeeze"](last_features))
 
         out = cat_features
 
@@ -51,7 +56,7 @@ class PoseDecoder(nn.Module):
 
         out = out.mean(3).mean(2)
 
-        out = 0.01 * out.view(-1, self.num_frames_to_predict_for, 1, 6)
+        out = out.view(-1, self.num_frames_to_predict_for, 1, 6)
         axisangle = out[..., :3]
         translation = out[..., 3:]
 

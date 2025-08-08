@@ -215,7 +215,15 @@ def generate_video(cfg_dict: DictConfig):
     video = rearrange(video, "t c h w -> t h w c")
     fps = 24
     os.makedirs(os.path.join("demo", "output"), exist_ok=True)
-    write_video(os.path.join("demo", "output", "video.mp4"), video, fps=fps)
+    # write_video(os.path.join("demo", "output", "video.mp4"), video, fps=fps)
+    import imageio
+    import numpy as np
+
+    # video: numpy array of shape (num_frames, height, width, 3), dtype=uint8
+    video = video.numpy()
+    with imageio.get_writer('demo/output/video.mp4', fps=fps) as writer:
+        for frame in video:
+            writer.append_data(frame)
     save_batch_images(example["context"]["image"][0], os.path.join("demo", "output", "context_img.png"))
     print(cyan(f"Saving output videos and context images to {os.path.join('demo', 'output')}."))
 

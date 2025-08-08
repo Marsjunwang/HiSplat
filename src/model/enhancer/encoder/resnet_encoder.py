@@ -18,14 +18,13 @@ class ResNetMultiImageInput(models.ResNet):
     """Constructs a resnet model with varying number of input images.
     Adapted from https://github.com/pytorch/vision/blob/master/torchvision/models/resnet.py
     """
-    def __init__(self, block, layers, num_classes=1000, num_input_images=1):
+    def __init__(self, block, layers, num_classes=1000, num_input_images=1, channels=3):
         super(ResNetMultiImageInput, self).__init__(block, layers)
         self.inplanes = 64
         self.conv1 = nn.Conv2d(
-            num_input_images * 3, 64, kernel_size=7, stride=2, padding=3, bias=False)
+            num_input_images * channels, 64, kernel_size=7, stride=2, padding=3, bias=False)
         self.bn1 = nn.BatchNorm2d(64)
         self.relu = nn.ReLU(inplace=True)
-        #self.relu = nn.ReLU(inplace=False)
         self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
         self.layer1 = self._make_layer(block, 64, layers[0])
         self.layer2 = self._make_layer(block, 128, layers[1], stride=2)
@@ -40,7 +39,7 @@ class ResNetMultiImageInput(models.ResNet):
                 nn.init.constant_(m.bias, 0)
 
 
-def resnet_multiimage_input(num_layers, pretrained=False, num_input_images=1):
+def resnet_multiimage_input(num_layers, pretrained=False, num_input_images=1, channels=3):
     """Constructs a ResNet model.
     Args:
         num_layers (int): Number of resnet layers. Must be 18 or 50
@@ -50,23 +49,44 @@ def resnet_multiimage_input(num_layers, pretrained=False, num_input_images=1):
     assert num_layers in [18, 34, 50], "Can only run with 18 or 50 layer resnet"
     blocks = {18: [2, 2, 2, 2], 34: [3, 4, 6, 3], 50: [3, 4, 6, 3]}[num_layers]
     block_type = {18: models.resnet.BasicBlock, 34: models.resnet.BasicBlock, 50: models.resnet.Bottleneck}[num_layers]
-    model = ResNetMultiImageInput(block_type, blocks, num_input_images=num_input_images)
+    model = ResNetMultiImageInput(block_type, blocks, num_input_images=num_input_images, channels=channels)
 
     if pretrained:
-        loaded = model_zoo.load_url(models.resnet.model_urls['resnet{}'.format(num_layers)])
-        loaded['conv1.weight'] = torch.cat(
-            [loaded['conv1.weight']] * num_input_images, 1) / num_input_images
-        model.load_state_dict(loaded)
+        from torchvision.models import ResNet18_Weights, ResNet34_Weights, ResNet50_Weights
+        weights_dict = {18: ResNet18_Weights.IMAGENET1K_V1, 34: ResNet34_Weights.IMAGENET1K_V1, 50: ResNet50_Weights.IMAGENET1K_V1}
+        weights = weights_dict[num_layers]
+        loaded = torch.hub.load_state_dict_from_url(weights.url)
+        if channels == 3:
+            loaded['conv1.weight'] = torch.cat(
+                [loaded['conv1.weight']] * num_input_images, 1) / num_input_images
+        else:
+            # 当输入特征的时候，channels可能是64,128时候，删除conv1.weight
+            del loaded['conv1.weight']
+        model.load_state_dict(loaded, strict=False)
     return model
 
+class Normalize(nn.Module):
+    def __init__(self, mean=0.45, std=0.225):
+        super().__init__()
+        self.register_buffer("mean", torch.tensor(mean))
+        self.register_buffer("std", torch.tensor(std))
 
+    def forward(self, x):
+        return (x - self.mean) / self.std
+    
 class ResnetEncoder(nn.Module):
     """Pytorch module for a resnet encoder
     """
-    def __init__(self, num_layers, pretrained, num_input_images=1, **kwargs):
+    def __init__(self, num_layers, pretrained, num_input_images=1, channels=3, **kwargs):
         super(ResnetEncoder, self).__init__()
 
         self.num_ch_enc = np.array([64, 64, 128, 256, 512])
+        self.channels = channels
+        if channels == 3:
+            self.input_normlize = Normalize()
+        else:
+            self.input_normlize = nn.Identity()
+        
 
         resnets = {18: models.resnet18,
                    34: models.resnet34,
@@ -78,7 +98,7 @@ class ResnetEncoder(nn.Module):
             raise ValueError("{} is not a valid number of resnet layers".format(num_layers))
 
         if num_input_images > 1:
-            self.encoder = resnet_multiimage_input(num_layers, pretrained, num_input_images)
+            self.encoder = resnet_multiimage_input(num_layers, pretrained, num_input_images, channels=channels)
         else:
             self.encoder = resnets[num_layers](pretrained)
 
@@ -87,7 +107,7 @@ class ResnetEncoder(nn.Module):
 
     def forward(self, input_image):
         self.features = []
-        x = (input_image - 0.45) / 0.225
+        x = self.input_normlize(input_image)
         x = self.encoder.conv1(x)
         x = self.encoder.bn1(x)
         self.features.append(self.encoder.relu(x))

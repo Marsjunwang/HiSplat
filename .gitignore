@@ -2,3 +2,4 @@ datasets/
 diff-gaussian-rasterization/
 checkpoints/
 outputs/
+debug_visualizations/

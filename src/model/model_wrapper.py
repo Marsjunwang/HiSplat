@@ -594,3 +594,9 @@ class ModelWrapper(LightningModule):
                 "frequency": 1,
             },
         }
+
+from src.model.enhancer import Enhancer
+class ModelWrapperEnhanced(ModelWrapper):
+    def __init__(self, enhancer: Enhancer, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.enhancer = enhancer

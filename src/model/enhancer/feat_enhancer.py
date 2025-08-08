@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from typing import List
+from typing import List, Sequence
 
 from jaxtyping import Float
 from torch import Tensor
@@ -23,5 +23,5 @@ class PanormicFeatEnhancer(FeatEnhancer):
         
     def forward(self, 
                 context: dict,
-                features: List[Float[Tensor, "b v c h w"]]) -> dict:
-        return {}
+                features: Sequence) -> tuple[dict, Sequence]:
+        return {}, features

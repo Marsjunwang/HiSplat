@@ -25,7 +25,7 @@ class CheckpointingCfg:
 class ModelCfg:
     decoder: DecoderCfg
     encoder: EncoderCfg
-    enhancer: EnhancerCfg
+    enhancer: EnhancerCfg | None
 
 @dataclass
 class TrainerCfg:

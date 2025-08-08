@@ -126,13 +126,13 @@ def train(cfg_dict: DictConfig):
     print(f"GPU number is {torch.cuda.device_count()}")
     torch.manual_seed(cfg_dict.seed + trainer.global_rank)
     decoder = get_decoder(cfg.model.decoder, cfg.dataset)
-    encoder, encoder_visualizer = get_encoder(cfg.model.encoder, decoder)
     if cfg.model.enhancer is not None:
         enhancer, enhancer_visualizer = get_enhancer(cfg.model.enhancer)
-    if cfg.mode == "train" and checkpoint_path is not None:
-        ckpt = torch.load(checkpoint_path)["state_dict"]
+    encoder, encoder_visualizer = get_encoder(cfg.model.encoder, decoder, enhancer)
+    if cfg.mode == "train" and cfg.checkpointing.pretrained_model is not None:
+        ckpt = torch.load(cfg.checkpointing.pretrained_model)["state_dict"]
         ckpt = {".".join(k.split(".")[1:]): v for k, v in ckpt.items()}
-        encoder.load_state_dict(ckpt)
+        encoder.load_state_dict(ckpt, strict=False)
     model_wrapper = ModelWrapper(
         cfg.optimizer,
         cfg.test,

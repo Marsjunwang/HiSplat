@@ -41,7 +41,7 @@
                 "+experiment=re10k",
                 "mode=test",
                 "output_dir=temp",
-                "checkpointing.load=./checkpoints/hisplat_re10k.ckpt"
+                "checkpointing.load=./checkpoints/hisplat_acid.ckpt"
             ],
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",
