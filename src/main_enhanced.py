@@ -109,12 +109,24 @@ def train(cfg_dict: DictConfig):
     # This allows the current step to be shared with the data loader processes.
     step_tracker = StepTracker()
 
+    # Resolve accelerator/devices to avoid Lightning CPU devices error when set to "auto"
+    resolved_accelerator = "cuda" if torch.cuda.is_available() else "cpu"
+    resolved_devices = cfg.device
+    if resolved_accelerator == "cpu":
+        # Lightning requires an int > 0 for CPU devices
+        if isinstance(resolved_devices, str) and resolved_devices == "auto":
+            resolved_devices = 1
+        elif isinstance(resolved_devices, int):
+            resolved_devices = max(1, resolved_devices)
+        else:
+            resolved_devices = 1
+
     trainer = Trainer(
         max_epochs=-1,
-        # accelerator="gpu",
+        accelerator=resolved_accelerator,
         logger=logger,
-        devices=cfg.device,
-        # strategy="ddp",
+        devices=resolved_devices,
+        # strategy="ddp",     # TODO: add ddp when training on multiple GPUs
         callbacks=callbacks,
         val_check_interval=cfg.trainer.val_check_interval,
         enable_progress_bar=cfg.mode == "test",
@@ -130,7 +142,13 @@ def train(cfg_dict: DictConfig):
         enhancer, enhancer_visualizer = get_enhancer(cfg.model.enhancer)
     encoder, encoder_visualizer = get_encoder(cfg.model.encoder, decoder, enhancer)
     if cfg.mode == "train" and cfg.checkpointing.pretrained_model is not None:
-        ckpt = torch.load(cfg.checkpointing.pretrained_model)["state_dict"]
+        if torch.cuda.is_available():
+            ckpt = torch.load(cfg.checkpointing.pretrained_model)["state_dict"]
+        else:
+            ckpt = torch.load(
+                cfg.checkpointing.pretrained_model,
+                map_location=torch.device("cpu"),
+            )["state_dict"]
         ckpt = {".".join(k.split(".")[1:]): v for k, v in ckpt.items()}
         encoder.load_state_dict(ckpt, strict=False)
     model_wrapper = ModelWrapper(

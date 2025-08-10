@@ -107,11 +107,22 @@ def train(cfg_dict: DictConfig):
     # This allows the current step to be shared with the data loader processes.
     step_tracker = StepTracker()
 
+    # Resolve accelerator/devices to avoid CPU "devices=auto" issue and allow CPU-only runs
+    resolved_accelerator = "cuda" if torch.cuda.is_available() else "cpu"
+    resolved_devices = cfg.device
+    if resolved_accelerator == "cpu":
+        if isinstance(resolved_devices, str) and resolved_devices == "auto":
+            resolved_devices = 1
+        elif isinstance(resolved_devices, int):
+            resolved_devices = max(1, resolved_devices)
+        else:
+            resolved_devices = 1
+
     trainer = Trainer(
         max_epochs=-1,
-        accelerator="gpu",
+        accelerator=resolved_accelerator,
         logger=logger,
-        devices=cfg.device,
+        devices=resolved_devices,
         strategy="ddp",
         callbacks=callbacks,
         val_check_interval=cfg.trainer.val_check_interval,
@@ -126,7 +137,11 @@ def train(cfg_dict: DictConfig):
     decoder = get_decoder(cfg.model.decoder, cfg.dataset)
     encoder, encoder_visualizer = get_encoder(cfg.model.encoder, decoder)
     if cfg.mode == "train" and checkpoint_path is not None:
-        ckpt = torch.load(checkpoint_path)["state_dict"]
+        ckpt = (
+            torch.load(checkpoint_path)["state_dict"]
+            if torch.cuda.is_available()
+            else torch.load(checkpoint_path, map_location=torch.device("cpu"))["state_dict"]
+        )
         ckpt = {".".join(k.split(".")[1:]): v for k, v in ckpt.items()}
         encoder.load_state_dict(ckpt)
     model_wrapper = ModelWrapper(

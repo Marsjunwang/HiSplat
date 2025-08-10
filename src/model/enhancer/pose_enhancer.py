@@ -15,6 +15,8 @@ from .utils.transformation_pose import transformation_from_parameters
 class PoseEnhancerCfg:
     name: str
     input_data: str
+    limit_pose_to_fov_overlap: bool
+    fov_overlap_epsilon_deg: float
     pose_encoder: dict
     pose_decoder: dict
 
@@ -28,9 +30,40 @@ class PoseSeparateEnhancer(PoseEnhancer):
             assert self.pose_encoder.channels == 3
         elif self.cfg.input_data == "feat":
             assert self.pose_encoder.channels == 128
+            
+        self.limit_pose_to_fov_overlap = cfg.limit_pose_to_fov_overlap
+        self.fov_overlap_epsilon_deg = cfg.fov_overlap_epsilon_deg
     
-    def _get_RT_matrix(self, axisangle, translation, invert=False, intrinsics=None):
-        transformation = transformation_from_parameters(axisangle, translation, invert=invert, intrinsics=intrinsics)
+    def _get_RT_matrix(self, 
+                       axisangle, 
+                       translation, 
+                       invert=False, 
+                       intrinsics=None,
+                       near=None,
+                       far=None,
+                       image_size=None):
+        if False:
+            from src.model.enhancer.utils.pose_overlap_viz import visualize_fov_overlap, export_fov_overlap_obj
+            img = visualize_fov_overlap(axisangle, 
+                                        translation, 
+                                        intrinsics, 
+                                        invert=False, 
+                                        epsilon_deg=0.5, 
+                                        resolution=256,
+                                        image_size=image_size,
+                                        near=near,
+                                        far=far,
+                                        save_to="fov_overlap.png",
+                                        pair_mode="both")
+            export_fov_overlap_obj(axisangle, translation, intrinsics, "fov_overlap.obj", invert=False, epsilon_deg=0.5)
+            exit()
+        transformation = transformation_from_parameters(axisangle, translation, 
+                                                        invert=invert, intrinsics=intrinsics,
+                                                        near=near,
+                                                        far=far,
+                                                        image_size=image_size,
+                                                        limit_pose_to_fov_overlap=self.limit_pose_to_fov_overlap,
+                                                        fov_overlap_epsilon_deg=self.fov_overlap_epsilon_deg)
         return transformation
     
     def forward(
@@ -46,7 +79,12 @@ class PoseSeparateEnhancer(PoseEnhancer):
         
         pose_feature = self.pose_encoder(input_data)
         axisangle, translation = self.pose_decoder(pose_feature)
-        pred_pose = self._get_RT_matrix(axisangle, translation, intrinsics=context["intrinsics"])
+        pred_pose = self._get_RT_matrix(axisangle, 
+                                        translation, 
+                                        intrinsics=context["intrinsics"],
+                                        near=context["near"],
+                                        far=context["far"],
+                                        image_size=context["image"].shape[-2:])
         context["extrinsics_pred"] = pred_pose
         return context, features
     

@@ -24,4 +24,4 @@ class PanormicFeatEnhancer(FeatEnhancer):
     def forward(self, 
                 context: dict,
                 features: Sequence) -> tuple[dict, Sequence]:
-        return {}, features
+        return context, features

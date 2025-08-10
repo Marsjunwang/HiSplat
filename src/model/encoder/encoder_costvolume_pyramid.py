@@ -71,7 +71,10 @@ class EncoderCostVolumePyramid(Encoder):
                 print("==> Init multi-view transformer backbone from scratch")
             else:
                 print("==> Load multi-view transformer backbone checkpoint: %s" % ckpt_path)
-                unimatch_pretrained_model = torch.load(ckpt_path)["model"]
+                unimatch_pretrained_model = torch.load(
+                    ckpt_path,
+                    map_location=torch.device("cpu") if not torch.cuda.is_available() else None,
+                )["model"]
                 updated_state_dict = {}
                 for k, v in unimatch_pretrained_model.items():
                     if k in self.backbone.state_dict():

@@ -22,15 +22,16 @@
             "args": [
                 "+experiment=acid",
                 "data_loader.train.batch_size=2",
-                "device=auto",
+                "data_loader.train.num_workers=0",
+                "device=cpu",
                 "output_dir=EXP_SAVING_PATH",
-                "trainer.val_check_interval=3000"
+                "trainer.val_check_interval=0"
             ],
             "console": "integratedTerminal",
             "env": {
                 "PYTHONPATH": "${workspaceFolder}"
             },
-            "justMyCode": false
+            "justMyCode": true
         },
         {
             "name": "Debug Demo (re10k)",

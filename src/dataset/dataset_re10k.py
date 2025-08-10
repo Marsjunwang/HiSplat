@@ -101,8 +101,12 @@ class DatasetRE10k(IterableDataset):
 
         for chunk_path in self.chunks:
             # print(chunk_path)
-            # Load the chunk.
-            chunk = torch.load(chunk_path)
+            # Load the chunk. Ensure CPU compatibility when CUDA is unavailable.
+            chunk = (
+                torch.load(chunk_path)
+                if torch.cuda.is_available()
+                else torch.load(chunk_path, map_location=torch.device("cpu"))
+            )
 
             if self.cfg.overfit_to_scene is not None:
                 item = [x for x in chunk if x["key"] == self.cfg.overfit_to_scene]

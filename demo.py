@@ -65,7 +65,6 @@ def cyan(text: str) -> str:
 )
 @torch.no_grad()
 def generate_video(cfg_dict: DictConfig):
-    cfg_dict["test"]["output_path"] = "outputs/" + cfg_dict["output_dir"] + "/test"
     cfg = load_typed_root_config(cfg_dict)
     set_cfg(cfg_dict)
     if cfg_dict.output_dir is None:
@@ -75,6 +74,8 @@ def generate_video(cfg_dict: DictConfig):
             Path(hydra.core.hydra_config.HydraConfig.get()["runtime"]["output_dir"]).parents[1] / cfg_dict.output_dir
         )
         os.makedirs(output_dir, exist_ok=True)
+    # Set the test output path now that output_dir is resolved
+    cfg_dict["test"]["output_path"] = str(output_dir / "test")
 
     # Set up logging with wandb.
     callbacks = []
@@ -124,11 +125,21 @@ def generate_video(cfg_dict: DictConfig):
     # This allows the current step to be shared with the data loader processes.
     step_tracker = StepTracker()
 
+    # Resolve accelerator/devices for CPU/GPU environments
+    resolved_accelerator = "cuda" if torch.cuda.is_available() else "cpu"
+    resolved_devices = cfg.device
+    if resolved_accelerator == "cpu":
+        if isinstance(resolved_devices, str) and resolved_devices == "auto":
+            resolved_devices = 1
+        elif isinstance(resolved_devices, int):
+            resolved_devices = max(1, resolved_devices)
+        else:
+            resolved_devices = 1
     trainer = Trainer(
         max_epochs=-1,
-        accelerator="gpu",
+        accelerator=resolved_accelerator,
         logger=logger,
-        devices=cfg.device,
+        devices=resolved_devices,
         strategy="ddp" if torch.cuda.device_count() > 1 else "auto",
         callbacks=callbacks,
         val_check_interval=cfg.trainer.val_check_interval,
@@ -143,7 +154,11 @@ def generate_video(cfg_dict: DictConfig):
     encoder, encoder_visualizer = get_encoder(cfg.model.encoder, decoder)
 
     if checkpoint_path is not None:
-        ckpt = torch.load(checkpoint_path)["state_dict"]
+        ckpt = (
+            torch.load(checkpoint_path)["state_dict"]
+            if torch.cuda.is_available()
+            else torch.load(checkpoint_path, map_location=torch.device("cpu"))["state_dict"]
+        )
         ckpt = {".".join(k.split(".")[1:]): v for k, v in ckpt.items()}
         encoder.load_state_dict(ckpt)
     # choose the task or method
@@ -153,10 +168,18 @@ def generate_video(cfg_dict: DictConfig):
         cfg.optimizer, cfg.test, cfg.train, encoder, encoder_visualizer, decoder, get_losses(cfg.loss), step_tracker
     )
 
-    model_wrapper = model_wrapper.eval().cuda()
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model_wrapper = model_wrapper.eval().to(device)
     """ Obtain data"""
-    example = torch.load(os.path.join("demo", "demo_example.tar"))
+    example = (
+        torch.load(os.path.join("demo", "demo_example.tar"))
+        if torch.cuda.is_available()
+        else torch.load(os.path.join("demo", "demo_example.tar"), map_location=torch.device("cpu"))
+    )
     print(f"Obtain context images and camera poses from {os.path.join('demo', 'demo_example.tar')}!")
+    # Move example tensors to the correct device
+    for k in ["image", "extrinsics", "intrinsics", "near", "far"]:
+        example["context"][k] = example["context"][k].to(device)
     # Run the model and get gaussians
     gaussian_dict, result_dict = model_wrapper.encoder(example["context"], 0, False, scene_names=[example["scene"]])
     gaussians = gaussian_dict[f"stage2"]["gaussians"]
