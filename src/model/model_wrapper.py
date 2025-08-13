@@ -148,6 +148,34 @@ class ModelWrapper(LightningModule):
             self.test_step_outputs = {}
             self.time_skip_steps_dict = {"encoder": 0, "decoder": 0}
 
+    @staticmethod
+    def _pose_metrics_from_se3(pred_01: Tensor, gt_01: Tensor) -> tuple[Tensor, Tensor]:
+        """Compute geodesic rotation error (deg) and translation L2 from two SE(3) transforms.
+
+        Args:
+            pred_01: [B, 4, 4] predicted transform from view0 to view1
+            gt_01:   [B, 4, 4] ground-truth transform from view0 to view1
+
+        Returns:
+            (rot_deg_mean, trans_l2_mean) as scalar tensors on the same device
+        """
+        assert pred_01.shape == gt_01.shape and pred_01.shape[-2:] == (4, 4)
+        R_pred = pred_01[..., :3, :3]
+        t_pred = pred_01[..., :3, 3]
+        R_gt = gt_01[..., :3, :3]
+        t_gt = gt_01[..., :3, 3]
+
+        R_rel = R_pred.transpose(-2, -1) @ R_gt
+        t_rel = torch.einsum("...ij,...j->...i", R_pred.transpose(-2, -1), (t_gt - t_pred))
+        trace = R_rel[..., 0, 0] + R_rel[..., 1, 1] + R_rel[..., 2, 2]
+        eps = 1e-6
+        cos_theta = ((trace - 1.0) * 0.5).clamp(min=-1.0 + eps, max=1.0 - eps)
+        angle = torch.acos(cos_theta)  # radians
+        trans_norm = t_rel.norm(dim=-1)
+        rot_deg_mean = (angle.mean() * 180.0 / torch.pi)
+        trans_l2_mean = trans_norm.mean()
+        return rot_deg_mean, trans_l2_mean
+
     def training_step(self, batch, batch_idx):
         max_steps = get_cfg().trainer.max_steps
         batch: BatchedExample = self.data_shim(batch)
@@ -488,7 +516,42 @@ class ModelWrapper(LightningModule):
                 f"context = {batch['context']['index'].tolist()}"
             )
 
-        # Render Gaussians.
+        # If training in pose-only mode, run a light pose evaluation without decoder.
+        if getattr(self.train_cfg, "pose_only", False):
+            try:
+                eo = None
+                if hasattr(self.encoder, "enhancer") and getattr(self.encoder, "enhancer") is not None:
+                    enhancer = self.encoder.enhancer
+                    if (
+                        hasattr(enhancer, "pose_enhancer")
+                        and hasattr(enhancer.pose_enhancer, "cfg")
+                        and enhancer.pose_enhancer.cfg.input_data == "feat"
+                    ):
+                        # Extract features using encoder backbone
+                        features_list = self.encoder.backbone(
+                            batch["context"],
+                            attn_splits=self.encoder.cfg.multiview_trans_attn_split,
+                            return_cnn_features=True,
+                            epipolar_kwargs=None,
+                        )
+                        ctx, _ = enhancer(batch["context"], features_list)
+                    else:
+                        # Use image-based pose enhancer path
+                        ctx, _ = enhancer(batch["context"], ())
+                    if isinstance(ctx, dict) and "_enhancer_outputs" in ctx:
+                        eo = ctx["_enhancer_outputs"]
+                if eo is not None:
+                    pred_01 = eo.get("pred_pose_0to1", None)
+                    gt_01 = eo.get("gt_pose_0to1", None)
+                    if pred_01 is not None and gt_01 is not None:
+                        rot_deg, trans_l2 = self._pose_metrics_from_se3(pred_01, gt_01)
+                        self.log("val/pose_rot_deg", rot_deg)
+                        self.log("val/pose_trans", trans_l2)
+            except Exception:
+                pass
+            return
+
+        # Render Gaussians (standard validation path).
         b, _, _, h, w = batch["target"]["image"].shape
         assert b == 1
         # Run the model and get gaussians
@@ -545,6 +608,20 @@ class ModelWrapper(LightningModule):
                 self.log(f"val/psnr_{tag}_{i}", psnr)
                 self.log(f"val/lpips_{tag}_{i}", lpips)
                 self.log(f"val/ssim_{tag}_{i}", ssim)
+
+            # Pose metrics if enhancer produced predictions (log once at last stage)
+            if i == len(gaussian_dict) - 1:
+                try:
+                    if isinstance(result_dict, dict) and "enhancer_outputs" in result_dict:
+                        eo = result_dict["enhancer_outputs"]
+                        pred_01 = eo.get("pred_pose_0to1", None)
+                        gt_01 = eo.get("gt_pose_0to1", None)
+                        if pred_01 is not None and gt_01 is not None:
+                            rot_deg, trans_l2 = self._pose_metrics_from_se3(pred_01, gt_01)
+                            self.log("val/pose_rot_deg", rot_deg)
+                            self.log("val/pose_trans", trans_l2)
+                except Exception:
+                    pass
 
             if self.eval_cnt == len(self.trainer.val_dataloaders) or self.eval_cnt == 0:
                 # Construct comparison image.
