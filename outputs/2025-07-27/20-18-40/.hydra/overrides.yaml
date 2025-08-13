@@ -1,5 +1,0 @@
-- +experiment=acid
-- data_loader.train.batch_size=2
-- device=auto
-- output_dir=EXP_SAVING_PATH
-- trainer.val_check_interval=3000

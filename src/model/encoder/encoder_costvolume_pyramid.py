@@ -139,9 +139,13 @@ class EncoderCostVolumePyramid(Encoder):
             epipolar_kwargs=epipolar_kwargs,
         )
 
+        enhancer_outputs = None
         if self.enhancer is not None:
             # Ensure features are a list for type-checked enhancers
             context, features_list = self.enhancer(context, features_list)
+            # Collect enhancer outputs without mutating batch further
+            if "_enhancer_outputs" in context:
+                enhancer_outputs = context.pop("_enhancer_outputs")
         # Sample depths from the resulting features.
         in_feats = features_list
         extra_info = {}
@@ -160,6 +164,9 @@ class EncoderCostVolumePyramid(Encoder):
             extra_info=extra_info,
             encoder=self,
         )
+        # Attach enhancer outputs (for logging/loss) without touching batch
+        if isinstance(result_dict, dict) and enhancer_outputs is not None:
+            result_dict["enhancer_outputs"] = enhancer_outputs
         return gaussian_dict, result_dict
 
     def convert_to_gaussians(self, result_dict, context, features_list, global_step, visualization_dump):

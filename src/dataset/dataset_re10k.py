@@ -7,6 +7,7 @@ from typing import Literal
 
 import torch
 import torchvision.transforms as tf
+import torch.nn.functional as F
 from einops import rearrange, repeat
 from jaxtyping import Float, UInt8
 from PIL import Image
@@ -37,6 +38,45 @@ class DatasetRE10kCfg(DatasetCfgCommon):
     far: float = -1.0
     baseline_scale_bounds: bool = True
     shuffle_val: bool = True
+
+
+def rescale_and_crop(
+    images: Float[Tensor, "batch 3 ..."],
+    intrinsics: Float[Tensor, "batch 3 3"],
+    target_size: tuple[int, int]
+) -> tuple[Float[Tensor, "batch 3 ..."], Float[Tensor, "batch 3 3"]]:
+    """Resize images to target_size and adjust intrinsics accordingly.
+    
+    Args:
+        images: Input images [B, 3, H, W]
+        intrinsics: Camera intrinsics [B, 3, 3] 
+        target_size: (target_height, target_width)
+        
+    Returns:
+        Resized images and adjusted intrinsics
+    """
+    B, C, H, W = images.shape
+    target_h, target_w = target_size
+    
+    # Resize images using bilinear interpolation
+    resized_images = F.interpolate(
+        images, 
+        size=(target_h, target_w), 
+        mode='bilinear', 
+        align_corners=False
+    )
+    
+    # Scale intrinsics to match new image dimensions
+    scale_x = target_w / W
+    scale_y = target_h / H
+    
+    adjusted_intrinsics = intrinsics.clone()
+    adjusted_intrinsics[:, 0, 0] *= scale_x  # fx
+    adjusted_intrinsics[:, 1, 1] *= scale_y  # fy  
+    adjusted_intrinsics[:, 0, 2] *= scale_x  # cx
+    adjusted_intrinsics[:, 1, 2] *= scale_y  # cy
+    
+    return resized_images, adjusted_intrinsics
 
 
 class DatasetRE10k(IterableDataset):
@@ -160,6 +200,14 @@ class DatasetRE10k(IterableDataset):
                         f"{target_images.shape}."
                     )
                     continue
+                elif context_image_invalid or target_image_invalid:
+                    # 将图片resize到(3, 360, 640)，并修改内参
+                    if context_image_invalid:
+                        context_images, context_intrinsics = rescale_and_crop(context_images, intrinsics[context_indices], (360, 640))
+                        intrinsics[context_indices] = context_intrinsics
+                    if target_image_invalid:
+                        target_images, target_intrinsics = rescale_and_crop(target_images, intrinsics[target_indices], (360, 640))
+                        intrinsics[target_indices] = target_intrinsics
 
                 # Resize the world to make the baseline 1.
                 context_extrinsics = extrinsics[context_indices]

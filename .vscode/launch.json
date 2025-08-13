@@ -42,7 +42,7 @@
                 "+experiment=re10k",
                 "mode=test",
                 "output_dir=temp",
-                "checkpointing.load=./checkpoints/hisplat_acid.ckpt"
+                "checkpointing.load=./checkpoints/hisplat_re10k.ckpt"
             ],
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",
@@ -57,9 +57,9 @@
             "request": "launch",
             "module": "src.main_enhanced",
             "args": [
-                "+experiment=acid",
+                "+experiment=acid_enhancer",
                 "data_loader.train.batch_size=2",
-                "data_loader.train.num_workers=0",
+                "data_loader.train.num_workers=2",
                 "device=auto",
                 "output_dir=EXP_SAVING_PATH"
             ],
@@ -68,7 +68,7 @@
             "env": {
                 "PYTHONPATH": "${workspaceFolder}"
             },
-            "justMyCode": false
+            "justMyCode": true
         },
     ]
 }

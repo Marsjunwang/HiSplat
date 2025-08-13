@@ -46,6 +46,8 @@ from .decoder.decoder import Decoder, DepthRenderingMode
 from .encoder import Encoder
 from .encoder.visualization.encoder_visualizer import EncoderVisualizer
 
+from .decoder.decoder import DecoderOutput
+
 
 @dataclass
 class OptimizerCfg:
@@ -73,6 +75,8 @@ class TrainCfg:
     align_3d: bool | float
     align_depth: bool | float
     normal_norm: bool
+    # If true, skip rendering/decoder and stage losses; optimize pose loss only.
+    pose_only: bool = False
 
 
 @runtime_checkable
@@ -121,7 +125,18 @@ class ModelWrapper(LightningModule):
         self.encoder = encoder
         self.encoder_visualizer = encoder_visualizer
         self.decoder = decoder
+        # Compose data shims from encoder and enhancer (if enhancer provides batch shim)
         self.data_shim = get_data_shim(self.encoder)
+        if hasattr(self.encoder, "enhancer") and getattr(self.encoder, "enhancer") is not None:
+            enhancer = getattr(self.encoder, "enhancer")
+            if hasattr(enhancer, "get_batch_shim"):
+                base_shim = self.data_shim
+                batch_shim = enhancer.get_batch_shim()
+
+                def composed_shim(batch):
+                    return batch_shim(base_shim(batch))
+
+                self.data_shim = composed_shim
         self.losses = nn.ModuleList(losses)
         self.train_time = AverageMeter()
         self.bg_time = 0
@@ -138,12 +153,91 @@ class ModelWrapper(LightningModule):
         batch: BatchedExample = self.data_shim(batch)
         b, tar_v, c, h, w = batch["target"]["image"].shape
         _, con_v, _, _, _ = batch["context"]["image"].shape
-        # Run the model and get gaussians
-        gaussian_dict, result_dict = self.encoder(batch["context"], self.global_step, False, scene_names=batch["scene"])
         target_gt = batch["target"]["image"]
+        # Run the model and get gaussians unless in pose-only mode
+        if not getattr(self.train_cfg, "pose_only", False):
+            gaussian_dict, result_dict = self.encoder(batch["context"], self.global_step, False, scene_names=batch["scene"])
+        else:
+            gaussian_dict, result_dict = None, {}
         # For three resolutions, render them
         total_loss = 0
         loss_dict = {}
+        # If configured, run pose-only optimization: skip decoder/rendering and stage losses.
+        if getattr(self.train_cfg, "pose_only", False):
+            # Build a minimal prediction object with required device info.
+            output = DecoderOutput(color=target_gt)
+            # Compute enhancer predictions directly to avoid running heavy decoder/rendering
+            try:
+                eo = None
+                if hasattr(self.encoder, "enhancer") and getattr(self.encoder, "enhancer") is not None:
+                    # For pose enhancer with feat input, we need to extract features first
+                    enhancer = self.encoder.enhancer
+                    if (hasattr(enhancer, 'pose_enhancer') and 
+                        hasattr(enhancer.pose_enhancer, 'cfg') and 
+                        enhancer.pose_enhancer.cfg.input_data == "feat"):
+                        # Extract features using encoder backbone
+                        features_list = self.encoder.backbone(
+                            batch["context"],
+                            attn_splits=self.encoder.cfg.multiview_trans_attn_split,
+                            return_cnn_features=True,
+                            epipolar_kwargs=None,
+                        )
+                        ctx, _ = enhancer(batch["context"], features_list)
+                    else:
+                        # Call enhancer with context and empty features (pose enhancer uses images when configured)
+                        ctx, _ = enhancer(batch["context"], ())
+                    if isinstance(ctx, dict) and "_enhancer_outputs" in ctx:
+                        eo = ctx["_enhancer_outputs"]
+                if eo is not None:
+                    output.pred_pose_0to1 = eo.get("pred_pose_0to1", None)
+                    output.pred_pose_1to0 = eo.get("pred_pose_1to0", None)
+                    output.gt_pose_0to1 = eo.get("gt_pose_0to1", None)
+
+                    if output.pred_pose_0to1 is not None and not torch.isfinite(output.pred_pose_0to1).all():
+                        print(
+                            f"[ModelWrapper] Non-finite pred_pose_0to1 received at step {self.global_step}"
+                        )
+                    if output.gt_pose_0to1 is not None and not torch.isfinite(output.gt_pose_0to1).all():
+                        print(
+                            f"[ModelWrapper] Non-finite gt_pose_0to1 received at step {self.global_step}"
+                        )
+            except Exception:
+                pass
+            # Compute pose loss only.
+            pose_loss_fn = next((l for l in self.losses if getattr(l, "name", "") == "pose_relative"), None)
+            if pose_loss_fn is not None:
+                try:
+                    pose_loss_value = pose_loss_fn.forward(output, batch, None, self.global_step)
+                    self.log(f"loss/{pose_loss_fn.name}", pose_loss_value)
+                    loss_dict[f"{pose_loss_fn.name}"] = pose_loss_value.item()
+                    total_loss = total_loss + pose_loss_value
+                    if hasattr(pose_loss_fn, "last_rot_deg_mean"):
+                        self.log("loss/pose_relative_rot_deg", pose_loss_fn.last_rot_deg_mean)
+                        loss_dict["pose_rot_deg"] = float(pose_loss_fn.last_rot_deg_mean)
+                    if hasattr(pose_loss_fn, "last_trans_mean"):
+                        self.log("loss/pose_relative_trans", pose_loss_fn.last_trans_mean)
+                        loss_dict["pose_trans"] = float(pose_loss_fn.last_trans_mean)
+                except Exception:
+                    pass
+            if self.global_rank == 0 and self.global_step % self.train_cfg.print_log_every_n_steps == 0:
+                print(
+                    f"train step[{self.global_step}/{get_cfg().trainer.max_steps}] ; "
+                    f"used: {format_duration(self.train_time.sum)}; "
+                    f"eta: {format_duration((get_cfg().trainer.max_steps - self.global_step) * self.train_time.avg)}; "
+                    f"loss = {total_loss:.6f}; "
+                    f"{[n + f'={l:.6f}; ' for n, l in loss_dict.items()]}"
+                )
+            self.log("info/near", batch["context"]["near"].detach().cpu().numpy().mean())
+            self.log("info/far", batch["context"]["far"].detach().cpu().numpy().mean())
+            self.log("info/global_step", self.global_step)
+            if self.step_tracker is not None:
+                self.step_tracker.set_step(self.global_step)
+            return total_loss
+        # Separate pose_relative loss from other losses (pose computed once)
+        stage_losses = [l for l in self.losses if getattr(l, "name", "") != "pose_relative"]
+        pose_loss_fn = next((l for l in self.losses if getattr(l, "name", "") == "pose_relative"), None)
+        last_gaussians = None
+        sup_batch = copy.deepcopy(batch)
         for i in range(len(gaussian_dict)):
             gaussians = gaussian_dict[f"stage{i}"]["gaussians"]
             pre_output = None if i == 0 else output
@@ -156,19 +250,56 @@ class ModelWrapper(LightningModule):
                 (h, w),
                 depth_mode=self.train_cfg.depth_mode,
             )
+            # Attach enhancer predictions (if any) into output to avoid mutating batch
+            if isinstance(result_dict, dict) and "enhancer_outputs" in result_dict:
+                eo = result_dict["enhancer_outputs"]
+                output.pred_pose_0to1 = eo.get("pred_pose_0to1", None)
+                output.pred_pose_1to0 = eo.get("pred_pose_1to0", None)
+                output.gt_pose_0to1 = eo.get("gt_pose_0to1", None)
+                # Debug: propagate sanity checks on enhancer outputs
+                try:
+                    import torch
+                    if output.pred_pose_0to1 is not None and not torch.isfinite(output.pred_pose_0to1).all():
+                        print(
+                            f"[ModelWrapper] Non-finite pred_pose_0to1 received at step {self.global_step}"
+                        )
+                    if output.gt_pose_0to1 is not None and not torch.isfinite(output.gt_pose_0to1).all():
+                        print(
+                            f"[ModelWrapper] Non-finite gt_pose_0to1 received at step {self.global_step}"
+                        )
+                except Exception:
+                    pass
+            last_gaussians = gaussians
             # Compute metrics.
             psnr_probabilistic = compute_psnr(
                 rearrange(target_gt, "b v c h w -> (b v) c h w"),
                 rearrange(output.color, "b v c h w -> (b v) c h w"),
             )
             self.log(f"train/psnr_probabilistic_stage{i}", psnr_probabilistic.mean())
-            sup_batch = copy.deepcopy(batch)
             # Compute and log loss.
-            for loss_fn in self.losses:
+            for loss_fn in stage_losses:
                 loss = loss_fn.forward(output, sup_batch, gaussians, self.global_step)
                 self.log(f"loss/{loss_fn.name}_{i}", loss)
                 loss_dict[f"{loss_fn.name}_{i}"] = loss.item()
                 total_loss = total_loss + loss
+        # Compute pose_relative loss once using the last stage output (if configured)
+        if pose_loss_fn is not None and 'output' in locals() and last_gaussians is not None:
+            try:
+                pose_loss_value = pose_loss_fn.forward(output, sup_batch, last_gaussians, self.global_step)
+                self.log(f"loss/{pose_loss_fn.name}", pose_loss_value)
+                loss_dict[f"{pose_loss_fn.name}"] = pose_loss_value.item()
+                total_loss = total_loss + pose_loss_value
+                # Log pose diagnostics without stage suffix
+                if hasattr(pose_loss_fn, "last_rot_deg_mean"):
+                    self.log("loss/pose_relative_rot_deg", pose_loss_fn.last_rot_deg_mean)
+                    loss_dict["pose_rot_deg"] = float(pose_loss_fn.last_rot_deg_mean)
+                if hasattr(pose_loss_fn, "last_trans_mean"):
+                    self.log("loss/pose_relative_trans", pose_loss_fn.last_trans_mean)
+                    loss_dict["pose_trans"] = float(pose_loss_fn.last_trans_mean)
+                if hasattr(pose_loss_fn, "last_valid_frac"):
+                    self.log("loss/pose_relative_valid_frac", pose_loss_fn.last_valid_frac)
+            except Exception:
+                pass
         if self.global_rank == 0 and self.global_step % self.train_cfg.print_log_every_n_steps == 0:
             print(
                 f"train step[{self.global_step}/{get_cfg().trainer.max_steps}] ; "
@@ -187,7 +318,52 @@ class ModelWrapper(LightningModule):
 
         return total_loss
 
-    """ Log the time"""
+    def configure_gradient_clipping(
+        self,
+        optimizer: optim.Optimizer,
+        gradient_clip_val: float | None = None,
+        gradient_clip_algorithm: str | None = None,
+        ) -> None:
+
+        # 找到 posenet 模块
+        pose_module = None
+        try:
+            if hasattr(self.encoder, "enhancer") and self.encoder.enhancer is not None:
+                pose_module = getattr(self.encoder.enhancer, "pose_enhancer", None)
+        except Exception:
+            pose_module = None
+
+        def grad_l2_norm(module: nn.Module) -> torch.Tensor:
+            if module is None:
+                return torch.tensor(0.0, device=self.device)
+            norms = []
+            for p in module.parameters():
+                if p.grad is not None:
+                    norms.append(p.grad.detach().norm(2))
+            if len(norms) == 0:
+                return torch.tensor(0.0, device=self.device)
+            return torch.stack(norms).norm(2)
+
+        pre = grad_l2_norm(pose_module)
+
+        # 按 Lightning 约定执行实际裁剪
+        # 这里 gradient_clip_val/algorithm 会由 Trainer 传入（若未传，Lightning 会在 self.clip_gradients 里用 Trainer 的默认值）
+        self.clip_gradients(
+            optimizer,
+            gradient_clip_val=gradient_clip_val,
+            gradient_clip_algorithm=gradient_clip_algorithm,
+        )
+
+        post = grad_l2_norm(pose_module)
+
+        # 记录指标
+        try:
+            self.log("debug/posenet_grad_norm_preclip", pre, prog_bar=False)
+            self.log("debug/posenet_grad_norm_postclip", post, prog_bar=False)
+            clipped_flag = (post < pre - 1e-12).float()
+            self.log("debug/posenet_grad_clipped", clipped_flag, prog_bar=False)
+        except Exception:
+            pass
 
     def on_train_batch_start(self, batch, batch_idex):
         if self.train_time.avg == 0:

@@ -58,6 +58,34 @@ def cyan(text: str) -> str:
     return f"{Fore.CYAN}{text}{Fore.RESET}"
 
 
+def align_world_to_first_context_camera(example):
+    """Align world frame to the first context camera frame.
+
+    Assumes `example["context"]["extrinsics"]` and `example["target"]["extrinsics"]`
+    are camera-to-world (c2w) 4x4 matrices with shape [batch, views, 4, 4].
+
+    After alignment, the first context camera will have identity extrinsics, and
+    all other cameras (including targets) will be transformed accordingly so that
+    their extrinsics are expressed in this new world frame.
+    """
+    if "context" not in example or "extrinsics" not in example["context"]:
+        return example
+
+    c2w_first = example["context"]["extrinsics"][:, 0]  # [B, 4, 4]
+    w2c_first = c2w_first.inverse()  # [B, 4, 4]
+
+    def _left_apply_w2c(views):
+        if views is None:
+            return
+        if "extrinsics" in views:
+            # [B, 1, 4, 4] @ [B, V, 4, 4] -> [B, V, 4, 4]
+            views["extrinsics"] = w2c_first[:, None] @ views["extrinsics"]
+
+    _left_apply_w2c(example.get("context"))
+    _left_apply_w2c(example.get("target"))
+    return example
+
+
 @hydra.main(
     version_base=None,
     config_path="config",
@@ -179,7 +207,16 @@ def generate_video(cfg_dict: DictConfig):
     print(f"Obtain context images and camera poses from {os.path.join('demo', 'demo_example.tar')}!")
     # Move example tensors to the correct device
     for k in ["image", "extrinsics", "intrinsics", "near", "far"]:
-        example["context"][k] = example["context"][k].to(device)
+        if k in example["context"]:
+            example["context"][k] = example["context"][k].to(device)
+    # Targets used below for rendering; move needed keys to device
+    if "target" in example:
+        for k in ["extrinsics", "intrinsics", "image", "near", "far"]:
+            if k in example["target"] and hasattr(example["target"][k], "to"):
+                example["target"][k] = example["target"][k].to(device)
+
+    # Align world frame to the first context camera frame so all poses are relative to it
+    example = align_world_to_first_context_camera(example)
     # Run the model and get gaussians
     gaussian_dict, result_dict = model_wrapper.encoder(example["context"], 0, False, scene_names=[example["scene"]])
     gaussians = gaussian_dict[f"stage2"]["gaussians"]

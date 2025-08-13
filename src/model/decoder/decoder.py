@@ -18,8 +18,12 @@ DepthRenderingMode = Literal[
 
 @dataclass
 class DecoderOutput:
-    color: Float[Tensor, "batch view 3 height width"]
-    depth: Float[Tensor, "batch view height width"] | None
+    color: Float[Tensor, "batch view 3 height width"] | None
+    depth: Float[Tensor, "batch view height width"] | None = None
+    # Optional predictions from enhancer/posenet to avoid mutating batch
+    pred_pose_0to1: Float[Tensor, "batch 4 4"] | None = None
+    pred_pose_1to0: Float[Tensor, "batch 4 4"] | None = None
+    gt_pose_0to1: Float[Tensor, "batch 4 4"] | None = None
 
 
 T = TypeVar("T")

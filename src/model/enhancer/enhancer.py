@@ -4,7 +4,7 @@ from typing import Generic, TypeVar, List, Sequence
 from jaxtyping import Float
 from torch import Tensor, nn
 
-from ...dataset.types import BatchedViews, DataShim
+from ...dataset.types import BatchedViews, DataShim, BatchedExample
 
 T = TypeVar("T")
 
@@ -35,6 +35,10 @@ class Enhancer(nn.Module, ABC, Generic[T]):
     def get_data_shim(self) -> DataShim:
         """The default shim doesn't modify the batch."""
         return lambda x: x
+
+    # Optional: batch-level shim, overridable by enhancer implementations
+    def get_batch_shim(self) -> DataShim:
+        return lambda batch: batch
     
 class PoseEnhancer(nn.Module, ABC, Generic[T]):
     cfg: T

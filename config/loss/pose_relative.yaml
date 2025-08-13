@@ -1,0 +1,4 @@
+pose_relative:
+  weight_rot: 1.0
+  weight_trans: 1.0
+

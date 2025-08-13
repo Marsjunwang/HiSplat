@@ -5,11 +5,40 @@ from typing import List, Dict, Sequence
 
 from jaxtyping import Float
 from torch import Tensor
+import torch
+import contextlib
 
 from .encoder import ResnetEncoder
 from .decoder import PoseDecoder, PoseCNN
 from einops import rearrange
 from .utils.transformation_pose import transformation_from_parameters
+from .utils.pose_alignment import align_world_to_view0, relative_pose_0_to_1, split_pred_relative_two_directions
+
+
+def _has_nonfinite_params(module: torch.nn.Module) -> bool:
+    for p in module.parameters():
+        if not torch.isfinite(p).all():
+            return True
+    return False
+
+
+def _reinit_pose_modules(encoder: torch.nn.Module, decoder: torch.nn.Module) -> None:
+    for m in encoder.modules():
+        if isinstance(m, torch.nn.Conv2d):
+            torch.nn.init.kaiming_normal_(m.weight, mode="fan_out", nonlinearity="relu")
+            if m.bias is not None:
+                torch.nn.init.constant_(m.bias, 0)
+        elif isinstance(m, torch.nn.BatchNorm2d):
+            torch.nn.init.constant_(m.weight, 1)
+            torch.nn.init.constant_(m.bias, 0)
+            m.running_mean.zero_()
+            m.running_var.fill_(1)
+            m.num_batches_tracked.zero_()
+    for m in decoder.modules():
+        if isinstance(m, torch.nn.Conv2d):
+            torch.nn.init.kaiming_normal_(m.weight, mode="fan_out", nonlinearity="relu")
+            if m.bias is not None:
+                torch.nn.init.constant_(m.bias, 0)
 
 @dataclass
 class PoseEnhancerCfg:
@@ -76,15 +105,31 @@ class PoseSeparateEnhancer(PoseEnhancer):
             input_data = rearrange(features[1], "b v c h w -> b (v c) h w")
         else:
             raise ValueError(f"Invalid input_data: {self.cfg.input_data}")
-        
         pose_feature = self.pose_encoder(input_data)
         axisangle, translation = self.pose_decoder(pose_feature)
-        pred_pose = self._get_RT_matrix(axisangle, 
-                                        translation, 
-                                        intrinsics=context["intrinsics"],
-                                        near=context["near"],
-                                        far=context["far"],
-                                        image_size=context["image"].shape[-2:])
-        context["extrinsics_pred"] = pred_pose
+
+        pred_pose = self._get_RT_matrix(
+                axisangle,
+                translation,
+                intrinsics=context["intrinsics"],
+                near=context["near"],
+                far=context["far"],
+                image_size=context["image"].shape[-2:],
+            )
+        # Compute predicted relative poses (0->1 and 1->0)
+        pred_01, pred_10 = split_pred_relative_two_directions(pred_pose)
+
+        # Align GT extrinsics to view 0 for consistency with the required world frame.
+        gt_pose_0to1 = None
+        if "extrinsics" in context:
+            extrinsics_aligned = align_world_to_view0(context["extrinsics"]) # [B, V, 4, 4]
+            if extrinsics_aligned.shape[1] >= 2:
+                gt_pose_0to1 = relative_pose_0_to_1(extrinsics_aligned)  # [B, 4, 4]
+        # 将预测返回给上层，避免修改 batch。
+        context["_enhancer_outputs"] = {
+            "pred_pose_0to1": pred_01,
+            "pred_pose_1to0": pred_10,
+            "gt_pose_0to1": gt_pose_0to1,
+        }
         return context, features
     

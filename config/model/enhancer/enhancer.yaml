@@ -3,18 +3,18 @@ enhance_type: "both"
 
 pose_enhancer:
   name: pose_separate
-  input_data: "feat"  # "image" or "feat"
+  input_data: "image"  # "image" or "feat"
   # Limit predicted relative rotation so that two cameras' FOVs still overlap at infinity.
   # When enabled, we clamp yaw/pitch within each camera's FOV, preserving roll as much as possible.
-  limit_pose_to_fov_overlap: true
+  limit_pose_to_fov_overlap: false
   # Small margin (in degrees) subtracted from FOV to avoid numerical boundary cases.
   fov_overlap_epsilon_deg: 0.5
   pose_encoder:
-    num_layers: 18
+    num_layers: 34
     weights_init: "pretrained"
     num_input_images: 2
     pretrained: True
-    channels: 128    # images 3 feat 128
+    channels: 3   # images 3 feat 128
   pose_decoder:
     num_input_features: 1
     num_frames_to_predict_for: 2

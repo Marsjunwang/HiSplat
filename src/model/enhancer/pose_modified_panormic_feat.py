@@ -29,6 +29,32 @@ class PoseModifiedPanormicFeatEnhancer(Enhancer):
         self.enhance_type = cfg.enhance_type
         self.pose_enhancer = get_pose_enhancer(cfg.pose_enhancer)
         self.feat_enhancer = get_feat_enhancer(cfg.feat_enhancer)
+
+    def get_batch_shim(self):
+        # Perform world alignment here so enhancer remains a portable plugin.
+        from .utils.pose_alignment import align_world_to_view0
+
+        def shim(batch):
+            # Align context and target extrinsics to context view-0 per-batch.
+            if (
+                "context" in batch
+                and "extrinsics" in batch["context"]
+                and batch["context"]["extrinsics"].dim() == 4
+            ):
+                # [B, V, 4, 4]
+                context_extr = batch["context"]["extrinsics"]
+                # Derive batch-wise base from each sample's first context view
+                base = context_extr[:, 0]  # [B, 4, 4]
+                base_inv = base.inverse().detach()[:, None]  # [B,1,4,4]
+                # These are inputs; detach safe. Keep as leaves
+                aligned_context = (base_inv @ batch["context"]["extrinsics"]).detach()
+                batch["context"]["extrinsics"] = aligned_context
+                if "target" in batch and "extrinsics" in batch["target"]:
+                    aligned_target = (base_inv @ batch["target"]["extrinsics"]).detach()
+                    batch["target"]["extrinsics"] = aligned_target
+            return batch
+
+        return shim
         
     def pose_enhance(self, context, features):
         context, features = self.pose_enhancer(context, features)

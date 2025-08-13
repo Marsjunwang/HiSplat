@@ -61,7 +61,10 @@ def resnet_multiimage_input(num_layers, pretrained=False, num_input_images=1, ch
                 [loaded['conv1.weight']] * num_input_images, 1) / num_input_images
         else:
             # 当输入特征的时候，channels可能是64,128时候，删除conv1.weight
-            del loaded['conv1.weight']
+            # Initialize conv1.weight with correct out_channels (64) to match conv1 definition
+            conv1_weight = torch.empty(64, num_input_images * channels, 7, 7)
+            nn.init.kaiming_normal_(conv1_weight, mode='fan_out', nonlinearity='relu')
+            loaded['conv1.weight'] = conv1_weight
         model.load_state_dict(loaded, strict=False)
     return model
 

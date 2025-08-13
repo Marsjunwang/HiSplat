@@ -120,13 +120,32 @@ def train(cfg_dict: DictConfig):
             resolved_devices = max(1, resolved_devices)
         else:
             resolved_devices = 1
+    strategy = None
+    if resolved_accelerator == "cuda":
+        try:
+            if isinstance(resolved_devices, int):
+                num_requested_devices = resolved_devices
+            elif isinstance(resolved_devices, str):
+                if resolved_devices == "auto":
+                    num_requested_devices = torch.cuda.device_count()
+                else:
+                    num_requested_devices = len([d for d in resolved_devices.split(",") if d.strip() != ""]) or 1
+            elif isinstance(resolved_devices, (list, tuple)):
+                num_requested_devices = len(resolved_devices)
+            else:
+                num_requested_devices = torch.cuda.device_count()
+        except Exception:
+            num_requested_devices = torch.cuda.device_count()
+
+        if num_requested_devices and num_requested_devices > 1:
+            strategy = "ddp_find_unused_parameters_true"
 
     trainer = Trainer(
         max_epochs=-1,
         accelerator=resolved_accelerator,
         logger=logger,
         devices=resolved_devices,
-        # strategy="ddp",     # TODO: add ddp when training on multiple GPUs
+        strategy=(strategy or "auto"),     # TODO: add ddp when training on multiple GPUs
         callbacks=callbacks,
         val_check_interval=cfg.trainer.val_check_interval,
         enable_progress_bar=cfg.mode == "test",
@@ -161,7 +180,9 @@ def train(cfg_dict: DictConfig):
         get_losses(cfg.loss),
         step_tracker,
     )
-    model_wrapper = TorchSyncBatchNorm().apply(model_wrapper)
+    # Enable SyncBatchNorm only when using multi-GPU
+    if torch.cuda.device_count() > 1:
+        model_wrapper = TorchSyncBatchNorm().apply(model_wrapper)
 
     data_module = DataModule(
         cfg.dataset,

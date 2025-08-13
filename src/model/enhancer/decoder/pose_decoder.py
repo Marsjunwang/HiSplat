@@ -37,6 +37,16 @@ class PoseDecoder(nn.Module):
         self.relu = nn.ReLU(inplace=False)
 
         self.net = nn.ModuleList(list(self.convs.values()))
+        self.net.apply(self._init_weights)
+        
+    def _init_weights(self, m):
+        if isinstance(m, nn.Conv2d):
+            nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+            if m.bias is not None:
+                nn.init.constant_(m.bias, 0)
+        elif isinstance(m, nn.BatchNorm2d):
+            nn.init.constant_(m.weight, 1)
+            nn.init.constant_(m.bias, 0)
 
     def forward(self, input_features):
         B, C, H, W = input_features[-1].shape
@@ -57,7 +67,7 @@ class PoseDecoder(nn.Module):
         out = out.mean(3).mean(2)
 
         out = out.view(-1, self.num_frames_to_predict_for, 1, 6)
-        axisangle = out[..., :3]
-        translation = out[..., 3:]
+        axisangle = 0.1 * out[..., :3]
+        translation = 0.1 * out[..., 3:]
 
         return axisangle, translation

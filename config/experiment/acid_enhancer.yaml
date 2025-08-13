@@ -3,7 +3,7 @@
 defaults:
   - override /dataset: re10k
   - override /model/encoder: costvolume_pyramid
-  - override /loss: [mse, lpips]
+  - override /loss: [mse, lpips, pose_relative]
 precision: 32
 wandb:
   name: acid
@@ -41,6 +41,7 @@ dataset:
   far: 100.
   baseline_scale_bounds: false
   make_baseline_1: false
+  skip_bad_shape: true
 
 test:
   eval_time_skip_steps: 5
