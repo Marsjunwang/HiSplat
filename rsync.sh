@@ -7,4 +7,4 @@
 # L40
 rsync -avz --progress --exclude='outputs' \
     --exclude='*.pyc' --exclude='__pycache__' --exclude='build' \
-    -e "ssh" ./ root@192.168.31.214:/home/narwal/HiSplat/
+    -e "ssh" ./ narwal@192.168.31.214:/home/narwal/HiSplat/
