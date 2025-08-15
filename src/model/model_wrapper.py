@@ -202,7 +202,8 @@ class ModelWrapper(LightningModule):
                     enhancer = self.encoder.enhancer
                     if (hasattr(enhancer, 'pose_enhancer') and 
                         hasattr(enhancer.pose_enhancer, 'cfg') and 
-                        enhancer.pose_enhancer.cfg.input_data == "feat"):
+                        (enhancer.pose_enhancer.cfg.input_data == "feat" \
+                        or enhancer.pose_enhancer.cfg.input_data == "feat_backbone")):
                         # Extract features using encoder backbone
                         features_list = self.encoder.backbone(
                             batch["context"],

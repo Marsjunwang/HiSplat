@@ -59,9 +59,10 @@
             "args": [
                 "+experiment=acid_enhancer",
                 "data_loader.train.batch_size=2",
-                "data_loader.train.num_workers=2",
+                "data_loader.train.num_workers=0",
                 "device=auto",
-                "output_dir=EXP_SAVING_PATH"
+                "output_dir=EXP_SAVING_PATH",
+                "model/enhancer=enhancer"
             ],
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",

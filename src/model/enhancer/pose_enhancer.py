@@ -5,6 +5,7 @@ from typing import List, Dict, Sequence
 
 from jaxtyping import Float
 from torch import Tensor
+import torch.nn.functional as F
 import torch
 import contextlib
 
@@ -44,6 +45,7 @@ def _reinit_pose_modules(encoder: torch.nn.Module, decoder: torch.nn.Module) -> 
 class PoseEnhancerCfg:
     name: str
     input_data: str
+    use_norm_xy: bool
     limit_pose_to_fov_overlap: bool
     fov_overlap_epsilon_deg: float
     pose_encoder: dict
@@ -52,13 +54,18 @@ class PoseEnhancerCfg:
 class PoseSeparateEnhancer(PoseEnhancer):
     def __init__(self, cfg: PoseEnhancerCfg):
         super().__init__(cfg)
+        norm_xy_channels = 2 if cfg.use_norm_xy else 0
+        cfg.pose_encoder.update(channels=cfg.pose_encoder["channels"] + norm_xy_channels)  
         self.pose_encoder = ResnetEncoder(**cfg.pose_encoder)
         cfg.pose_decoder.update(num_ch_enc=self.pose_encoder.num_ch_enc)
         self.pose_decoder = PoseDecoder(**cfg.pose_decoder)
+        
         if self.cfg.input_data == "image":
-            assert self.pose_encoder.channels == 3
+            assert self.pose_encoder.channels == 3 + norm_xy_channels
         elif self.cfg.input_data == "feat":
-            assert self.pose_encoder.channels == 128
+            assert self.pose_encoder.channels == 128 + norm_xy_channels
+        elif self.cfg.input_data == "feat_backbone":
+            assert self.pose_encoder.channels == 32 + norm_xy_channels
             
         self.limit_pose_to_fov_overlap = cfg.limit_pose_to_fov_overlap
         self.fov_overlap_epsilon_deg = cfg.fov_overlap_epsilon_deg
@@ -101,10 +108,18 @@ class PoseSeparateEnhancer(PoseEnhancer):
         features: Sequence) -> tuple[Dict, Sequence]:
         if self.cfg.input_data == "image":
             input_data = rearrange(context["image"], "b v c h w -> b (v c) h w")
-        elif self.cfg.input_data == "feat":
+        elif self.cfg.input_data == "feat": # feat from transformer b v 128 64 64
             input_data = rearrange(features[1], "b v c h w -> b (v c) h w")
+        elif self.cfg.input_data == "feat_backbone": # feat from backbone (b v) 128 32 32
+            input_data = rearrange(features[0][-1], "(b v) c h w -> b (v c) h w", b=context["image"].shape[0])
         else:
             raise ValueError(f"Invalid input_data: {self.cfg.input_data}")
+        
+        if self.cfg.use_norm_xy:
+            norm_xy = rearrange(context["norm_xy"], "b v c h w -> b (v c) h w")
+            if norm_xy.shape[-2:] != input_data.shape[-2:]:
+                norm_xy = F.interpolate(norm_xy, size=input_data.shape[-2:], mode="bilinear", align_corners=False)
+            input_data = torch.cat([input_data, norm_xy], dim=1)
         pose_feature = self.pose_encoder(input_data)
         axisangle, translation = self.pose_decoder(pose_feature)
 

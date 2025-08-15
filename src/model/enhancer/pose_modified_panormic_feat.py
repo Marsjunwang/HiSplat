@@ -8,6 +8,7 @@ from torch import nn
 from .factory import get_pose_enhancer, get_feat_enhancer
 from .pose_enhancer import PoseEnhancerCfg
 from .feat_enhancer import FeatEnhancerCfg
+from .utils.normalized_coords import add_normalized_coords_to_batch
 
 
 
@@ -52,6 +53,12 @@ class PoseModifiedPanormicFeatEnhancer(Enhancer):
                 if "target" in batch and "extrinsics" in batch["target"]:
                     aligned_target = (base_inv @ batch["target"]["extrinsics"]).detach()
                     batch["target"]["extrinsics"] = aligned_target
+            # Add normalized xy coords for later feature fusion
+            try:
+                add_normalized_coords_to_batch(batch)
+            except Exception:
+                # Best-effort; do not break training if shapes are missing early
+                pass
             return batch
 
         return shim

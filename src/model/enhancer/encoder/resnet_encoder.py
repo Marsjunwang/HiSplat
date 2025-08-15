@@ -21,6 +21,8 @@ class ResNetMultiImageInput(models.ResNet):
     def __init__(self, block, layers, num_classes=1000, num_input_images=1, channels=3):
         super(ResNetMultiImageInput, self).__init__(block, layers)
         self.inplanes = 64
+        # TODO：输入transformer特征直接将128x2特征压缩到64且stride为2，可能造成了比较大的信息损失
+        #       后期可能可以优化
         self.conv1 = nn.Conv2d(
             num_input_images * channels, 64, kernel_size=7, stride=2, padding=3, bias=False)
         self.bn1 = nn.BatchNorm2d(64)
@@ -59,13 +61,20 @@ def resnet_multiimage_input(num_layers, pretrained=False, num_input_images=1, ch
         if channels == 3:
             loaded['conv1.weight'] = torch.cat(
                 [loaded['conv1.weight']] * num_input_images, 1) / num_input_images
+        elif channels == 128:
+            conv1_weight = torch.empty(64, num_input_images * channels, 7, 7)
+            nn.init.kaiming_normal_(conv1_weight, mode='fan_out', nonlinearity='relu')
+            loaded['conv1.weight'] = conv1_weight
+        elif channels == 32:
+            conv1_weight = torch.empty(64, num_input_images * channels, 7, 7)
+            nn.init.kaiming_normal_(conv1_weight, mode='fan_out', nonlinearity='relu')
+            loaded['conv1.weight'] = conv1_weight
         else:
-            # 当输入特征的时候，channels可能是64,128时候，删除conv1.weight
-            # Initialize conv1.weight with correct out_channels (64) to match conv1 definition
             conv1_weight = torch.empty(64, num_input_images * channels, 7, 7)
             nn.init.kaiming_normal_(conv1_weight, mode='fan_out', nonlinearity='relu')
             loaded['conv1.weight'] = conv1_weight
         model.load_state_dict(loaded, strict=False)
+        
     return model
 
 class Normalize(nn.Module):

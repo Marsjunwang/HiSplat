@@ -3,8 +3,8 @@ enhance_type: "both"
 
 pose_enhancer:
   name: pose_separate
-  input_data: "image"  # "image" or "feat"
-  use_norm_xy: true   # 是否给每个view添加归一化xy坐标，对应channel需要加上2个通道，用于后续特征融合
+  input_data: "feat_backbone"  # "image" or "feat" or "feat_backbone"
+  use_norm_xy: false
   # Limit predicted relative rotation so that two cameras' FOVs still overlap at infinity.
   # When enabled, we clamp yaw/pitch within each camera's FOV, preserving roll as much as possible.
   limit_pose_to_fov_overlap: false
@@ -15,7 +15,7 @@ pose_enhancer:
     weights_init: "pretrained"
     num_input_images: 2
     pretrained: True
-    channels: 3   # images 3 feat 128
+    channels: 32   # Use 128 for feat input (matches d_feature in encoder)
   pose_decoder:
     num_input_features: 1
     num_frames_to_predict_for: 2
@@ -27,4 +27,3 @@ feat_enhancer:
   name: panormic_feat
   panormic_radius: 0.5
   panormic_resolution: [1.0, 1.0]
-  

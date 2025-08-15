@@ -4,6 +4,7 @@ enhance_type: "both"
 pose_enhancer:
   name: pose_separate
   input_data: "feat"  # "image" or "feat"
+  use_norm_xy: false
   # Limit predicted relative rotation so that two cameras' FOVs still overlap at infinity.
   # When enabled, we clamp yaw/pitch within each camera's FOV, preserving roll as much as possible.
   limit_pose_to_fov_overlap: false
