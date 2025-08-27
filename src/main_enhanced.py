@@ -16,6 +16,8 @@ from pytorch_lightning.callbacks import (
 from pytorch_lightning.loggers import TensorBoardLogger
 from pytorch_lightning.loggers.wandb import WandbLogger
 from pytorch_lightning.plugins.layer_sync import TorchSyncBatchNorm
+import torch
+torch.autograd.set_detect_anomaly(True)
 
 # Configure beartype and jaxtyping.
 with install_import_hook(

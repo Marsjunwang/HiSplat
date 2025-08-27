@@ -59,10 +59,11 @@
             "args": [
                 "+experiment=acid_enhancer",
                 "data_loader.train.batch_size=2",
-                "data_loader.train.num_workers=0",
+                "data_loader.train.num_workers=4",
                 "device=auto",
                 "output_dir=EXP_SAVING_PATH",
-                "model/enhancer=enhancer"
+                "model/enhancer=enhancer",
+                "model.enhancer.pose_enhancer.name=pose_sparse"
             ],
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",
