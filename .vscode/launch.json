@@ -58,8 +58,8 @@
             "module": "src.main_enhanced",
             "args": [
                 "+experiment=acid_enhancer",
-                "data_loader.train.batch_size=2",
-                "data_loader.train.num_workers=4",
+                "data_loader.train.batch_size=8",
+                "data_loader.train.num_workers=8",
                 "device=auto",
                 "output_dir=EXP_SAVING_PATH",
                 "model/enhancer=enhancer",

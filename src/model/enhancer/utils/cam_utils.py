@@ -12,3 +12,9 @@ def pixel_to_norm_points(xy_pix: torch.Tensor,
     invK = torch.linalg.inv(K)
     xyz = (invK @ uv1.t()).t()               # [M,3]
     return xyz[:, :2] / (xyz[:, 2:3] + 1e-8)
+
+def create_xy(h: int, w: int, device: torch.device) -> torch.Tensor:
+    y, x = torch.meshgrid(torch.arange(h, device = device), 
+                            torch.arange(w, device = device), indexing='ij')
+    xy = torch.cat([x[..., None],y[..., None]], -1).reshape(-1,2)
+    return xy

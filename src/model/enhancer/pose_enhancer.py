@@ -158,30 +158,29 @@ class PoseSparseEnhancer(PoseEnhancer):
         self.pose_encoder = XFeatSparseEncoder(
             weights=cfg.pose_encoder.get("weights", None),
             detection_threshold=cfg.pose_encoder.get("detection_threshold", 0.0),
-            top_k=cfg.pose_encoder.get("top_k", -1),
+            top_k=cfg.pose_encoder.get("top_k", 1024),
         )
         self.pose_decoder = PoseDecoderSparse(
             tau=cfg.pose_decoder.get("tau", 0.2),
             use_hard_mnn=cfg.pose_decoder.get("use_hard_mnn", False),
             min_cossim=cfg.pose_decoder.get("min_cossim", 0.0),
-            enable_scale_head=cfg.pose_decoder.get("enable_scale_head", True),
         )
 
     def forward(
         self,
         context: dict,
         features: Sequence) -> tuple[Dict, Sequence]:
-        feats, scores, kpts = self.pose_encoder(context["image"])  # feats:[B*2,N,64] -> rearrange; scores:[B,2,N]; kpts:[B,2,N,2]
+        feats, scores, kpts, t_scale = self.pose_encoder(context["image"])  # feats:[B*2,N,64] -> rearrange; scores:[B,2,N]; kpts:[B,2,N,2]
         K = context["intrinsics"][:, :2]  # [B,2,3,3]
-        pred = self.pose_decoder(feats, scores, kpts, K)  # [B,2,4,4]
-        pred_01 = pred[:, 0]
-        pred_10 = pred[:, 1]
         # Align GT extrinsics to view 0 for consistency with the required world frame.
         gt_pose_0to1 = None
         if "extrinsics" in context:
             extrinsics_aligned = align_world_to_view0(context["extrinsics"])  # [B, V, 4, 4]
             if extrinsics_aligned.shape[1] >= 2:
                 gt_pose_0to1 = relative_pose_0_to_1(extrinsics_aligned)
+        pred = self.pose_decoder(feats, scores, kpts, t_scale, K, gt_pose_0to1)  # [B,2,4,4]
+        pred_01 = pred[:, 0]
+        pred_10 = pred[:, 1]
         context["_enhancer_outputs"] = {
             "pred_pose_0to1": pred_01,
             "pred_pose_1to0": pred_10,

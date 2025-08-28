@@ -145,7 +145,8 @@ def transformation_from_parameters(
 
     if invert:
         R = R.transpose(-2, -1)
-        t *= -1
+        # Avoid in-place to keep autograd graph valid
+        t = -t
 
     # Optionally clamp rotation to ensure FOV overlap at infinity, controlled by config
     try:

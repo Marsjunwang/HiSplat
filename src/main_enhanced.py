@@ -155,6 +155,8 @@ def train(cfg_dict: DictConfig):
         max_steps=cfg.trainer.max_steps,
         num_sanity_val_steps=cfg.trainer.num_sanity_val_steps,
         precision=cfg.precision,
+        detect_anomaly=True,
+        
     )
     print(f"GPU number is {torch.cuda.device_count()}")
     torch.manual_seed(cfg_dict.seed + trainer.global_rank)
