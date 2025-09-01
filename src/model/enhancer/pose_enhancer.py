@@ -2,6 +2,7 @@ from numpy import AxisError
 from .enhancer import PoseEnhancer
 from dataclasses import dataclass
 from typing import List, Dict, Sequence
+import os
 
 from jaxtyping import Float
 from torch import Tensor
@@ -15,33 +16,9 @@ from .decoder.pose_decoder_sparse import PoseDecoderSparse
 from .encoder.xfeat_sparse_encoder import XFeatSparseEncoder
 from einops import rearrange
 from .utils.transformation_pose import transformation_from_parameters
-from .utils.pose_alignment import align_world_to_view0, relative_pose_0_to_1, split_pred_relative_two_directions
+from .utils.pose_alignment import (align_world_to_view0, relative_pose_0_to_1, 
+                                   split_pred_relative_two_directions)
 
-
-def _has_nonfinite_params(module: torch.nn.Module) -> bool:
-    for p in module.parameters():
-        if not torch.isfinite(p).all():
-            return True
-    return False
-
-
-def _reinit_pose_modules(encoder: torch.nn.Module, decoder: torch.nn.Module) -> None:
-    for m in encoder.modules():
-        if isinstance(m, torch.nn.Conv2d):
-            torch.nn.init.kaiming_normal_(m.weight, mode="fan_out", nonlinearity="relu")
-            if m.bias is not None:
-                torch.nn.init.constant_(m.bias, 0)
-        elif isinstance(m, torch.nn.BatchNorm2d):
-            torch.nn.init.constant_(m.weight, 1)
-            torch.nn.init.constant_(m.bias, 0)
-            m.running_mean.zero_()
-            m.running_var.fill_(1)
-            m.num_batches_tracked.zero_()
-    for m in decoder.modules():
-        if isinstance(m, torch.nn.Conv2d):
-            torch.nn.init.kaiming_normal_(m.weight, mode="fan_out", nonlinearity="relu")
-            if m.bias is not None:
-                torch.nn.init.constant_(m.bias, 0)
 
 @dataclass
 class PoseEnhancerCfg:
@@ -156,9 +133,10 @@ class PoseSparseEnhancer(PoseEnhancer):
         super().__init__(cfg)
         # XFeat sparse pipeline
         self.pose_encoder = XFeatSparseEncoder(
-            weights=cfg.pose_encoder.get("weights", None),
+            weights=cfg.pose_encoder.get("weights", os.path.abspath(
+               os.path.dirname(__file__)) + '/encoder/xFeat/weights/xfeat.pt'),
             detection_threshold=cfg.pose_encoder.get("detection_threshold", 0.0),
-            top_k=cfg.pose_encoder.get("top_k", 1024),
+            top_k=cfg.pose_encoder.get("top_k", 8000),
         )
         self.pose_decoder = PoseDecoderSparse(
             tau=cfg.pose_decoder.get("tau", 0.2),
@@ -170,15 +148,15 @@ class PoseSparseEnhancer(PoseEnhancer):
         self,
         context: dict,
         features: Sequence) -> tuple[Dict, Sequence]:
-        feats, scores, kpts, t_scale = self.pose_encoder(context["image"])  # feats:[B*2,N,64] -> rearrange; scores:[B,2,N]; kpts:[B,2,N,2]
+        kpts0, kpts1, conf, t_scale = self.pose_encoder(context) 
         K = context["intrinsics"][:, :2]  # [B,2,3,3]
-        # Align GT extrinsics to view 0 for consistency with the required world frame.
+
         gt_pose_0to1 = None
         if "extrinsics" in context:
-            extrinsics_aligned = align_world_to_view0(context["extrinsics"])  # [B, V, 4, 4]
+            extrinsics_aligned = align_world_to_view0(context["extrinsics"])  
             if extrinsics_aligned.shape[1] >= 2:
                 gt_pose_0to1 = relative_pose_0_to_1(extrinsics_aligned)
-        pred = self.pose_decoder(feats, scores, kpts, t_scale, K, gt_pose_0to1)  # [B,2,4,4]
+        pred = self.pose_decoder(kpts0, kpts1, conf, t_scale, K, gt_pose_0to1)  
         pred_01 = pred[:, 0]
         pred_10 = pred[:, 1]
         context["_enhancer_outputs"] = {

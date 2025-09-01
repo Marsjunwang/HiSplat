@@ -95,19 +95,19 @@ class XFeatModel(nn.Module):
   		########### ⬇️ Fine Matcher MLP ⬇️ ###########
 
 		self.fine_matcher =  nn.Sequential(
-											nn.Linear(128, 512),
+											nn.Conv1d(258, 512, 1),
 											nn.BatchNorm1d(512, affine=False),
 									  		nn.ReLU(inplace = True),
-											nn.Linear(512, 512),
+											nn.Conv1d(512, 512, 1),
 											nn.BatchNorm1d(512, affine=False),
 									  		nn.ReLU(inplace = True),
-											nn.Linear(512, 512),
+											nn.Conv1d(512, 512, 1),
 											nn.BatchNorm1d(512, affine=False),
 									  		nn.ReLU(inplace = True),
-											nn.Linear(512, 512),
+											nn.Conv1d(512, 512, 1),
 											nn.BatchNorm1d(512, affine=False),
 									  		nn.ReLU(inplace = True),
-											nn.Linear(512, 64),
+											nn.Conv1d(512, 64, 1),
 										)
 
 	def _unfold2d(self, x, ws = 2):

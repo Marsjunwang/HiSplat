@@ -120,7 +120,7 @@ def estimate_relative_pose_w8pt(kpts0, kpts1, intr0, intr1, confidence, t_scale,
             pred_T021 = torch.eye(4, device=dev).unsqueeze(0).repeat(bs, 1, 1)
             pred_T021[:, :3, :3] = R
             # Avoid chained in-place on a view: compute once and assign
-            t_scaled = t.squeeze(-1) * t_scale
+            t_scaled = t.squeeze(-1) * t_scale[:,None]
             pred_T021[:, :3, 3] = t_scaled
 
             curr_err = compute_rotation_error(pred_T021, T_021, reduce=False) \
