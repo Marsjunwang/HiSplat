@@ -1,0 +1,21 @@
+defaults:
+ - pose_enhancer/pose_encoder: xfeat
+name: pose_modified_panormic_feat
+enhance_type: "both"
+
+pose_enhancer:
+  name: pose_xfeat
+  input_data: "image"  # "image" or "feat" or "feat_backbone"
+  use_norm_xy: false
+  # Limit predicted relative rotation so that two cameras' FOVs still overlap at infinity.
+  # When enabled, we clamp yaw/pitch within each camera's FOV, preserving roll as much as possible.
+  limit_pose_to_fov_overlap: false
+  # Small margin (in degrees) subtracted from FOV to avoid numerical boundary cases.
+  fov_overlap_epsilon_deg: 0.5
+  pose_decoder:
+    choose_closest: true  # for relative pose with multi-view, if true, the pose is the mean of all views
+  
+feat_enhancer:
+  name: panormic_feat
+  panormic_radius: 0.5
+  panormic_resolution: [1.0, 1.0]

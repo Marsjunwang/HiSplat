@@ -195,15 +195,14 @@ class ModelWrapper(LightningModule):
             # Build a minimal prediction object with required device info.
             output = DecoderOutput(color=target_gt)
             # Compute enhancer predictions directly to avoid running heavy decoder/rendering
+            eo = None
             try:
-                eo = None
                 if hasattr(self.encoder, "enhancer") and getattr(self.encoder, "enhancer") is not None:
-                    # For pose enhancer with feat input, we need to extract features first
                     enhancer = self.encoder.enhancer
+                    # For pose enhancer with feat input, we need to extract features first
                     if (hasattr(enhancer, 'pose_enhancer') and 
                         hasattr(enhancer.pose_enhancer, 'cfg') and 
                         (enhancer.pose_enhancer.cfg.input_data != "image")):
-                        # Extract features using encoder backbone
                         features_list = self.encoder.backbone(
                             batch["context"],
                             attn_splits=self.encoder.cfg.multiview_trans_attn_split,
@@ -216,21 +215,37 @@ class ModelWrapper(LightningModule):
                         ctx, _ = enhancer(batch["context"], ())
                     if isinstance(ctx, dict) and "_enhancer_outputs" in ctx:
                         eo = ctx["_enhancer_outputs"]
-                if eo is not None:
-                    output.pred_pose_0to1 = eo.get("pred_pose_0to1", None)
-                    output.pred_pose_1to0 = eo.get("pred_pose_1to0", None)
-                    output.gt_pose_0to1 = eo.get("gt_pose_0to1", None)
-
-                    if output.pred_pose_0to1 is not None and not torch.isfinite(output.pred_pose_0to1).all():
+                    else:
+                        try:
+                            ctx_keys = list(ctx.keys()) if isinstance(ctx, dict) else None
+                        except Exception:
+                            ctx_keys = None
                         print(
-                            f"[ModelWrapper] Non-finite pred_pose_0to1 received at step {self.global_step}"
+                            f"[PoseOnly] enhancer returned no _enhancer_outputs at step {self.global_step}. ctx_type={type(ctx)}, keys={ctx_keys}"
                         )
-                    if output.gt_pose_0to1 is not None and not torch.isfinite(output.gt_pose_0to1).all():
-                        print(
-                            f"[ModelWrapper] Non-finite gt_pose_0to1 received at step {self.global_step}"
-                        )
-            except Exception:
-                pass
+            except Exception as e:
+                import traceback
+                print(f"[PoseOnly] Enhancer call failed at step {self.global_step}: {type(e).__name__}: {e}")
+                print(traceback.format_exc())
+                try:
+                    has_enh = hasattr(self.encoder, 'enhancer') and (self.encoder.enhancer is not None)
+                    pe_cfg = getattr(getattr(self.encoder.enhancer, 'pose_enhancer', None), 'cfg', None) if has_enh else None
+                    print(f"[PoseOnly] encoder.has_enhancer={has_enh}; pose_enhancer.cfg={pe_cfg}")
+                except Exception:
+                    pass
+            if eo is not None:
+                # Attach predictions and print quick diagnostics for debugging
+                output.pred_pose_0to1 = eo.get("pred_pose_0to1", None)
+                output.pred_pose_1to0 = eo.get("pred_pose_1to0", None)
+                output.gt_pose_0to1 = eo.get("gt_pose_0to1", None)
+                if output.pred_pose_0to1 is not None and not torch.isfinite(output.pred_pose_0to1).all():
+                    print(
+                        f"[ModelWrapper] Non-finite pred_pose_0to1 received at step {self.global_step}"
+                    )
+                if output.gt_pose_0to1 is not None and not torch.isfinite(output.gt_pose_0to1).all():
+                    print(
+                        f"[ModelWrapper] Non-finite gt_pose_0to1 received at step {self.global_step}"
+                    )
             # Compute pose loss only.
             pose_loss_fn = next((l for l in self.losses if getattr(l, "name", "") == "pose_relative"), None)
             if pose_loss_fn is not None:
@@ -245,8 +260,15 @@ class ModelWrapper(LightningModule):
                     if hasattr(pose_loss_fn, "last_trans_mean"):
                         self.log("loss/pose_relative_trans", pose_loss_fn.last_trans_mean)
                         loss_dict["pose_trans"] = float(pose_loss_fn.last_trans_mean)
-                except Exception:
-                    pass
+                except Exception as e:
+                    import traceback
+                    print(f"[PoseLoss ERROR] at step {self.global_step}: {type(e).__name__}: {e}")
+                    try:
+                        print(f"[PoseLoss DEBUG] pred_pose_0to1 shape={getattr(output.pred_pose_0to1,'shape',None)} requires_grad={getattr(output.pred_pose_0to1,'requires_grad',None)}")
+                        print(f"[PoseLoss DEBUG] gt_pose_0to1 shape={getattr(output.gt_pose_0to1,'shape',None)}")
+                    except Exception:
+                        pass
+                    print(traceback.format_exc())
             if self.global_rank == 0 and self.global_step % self.train_cfg.print_log_every_n_steps == 0:
                 print(
                     f"train step[{self.global_step}/{get_cfg().trainer.max_steps}] ; "
@@ -286,7 +308,6 @@ class ModelWrapper(LightningModule):
                 output.gt_pose_0to1 = eo.get("gt_pose_0to1", None)
                 # Debug: propagate sanity checks on enhancer outputs
                 try:
-                    import torch
                     if output.pred_pose_0to1 is not None and not torch.isfinite(output.pred_pose_0to1).all():
                         print(
                             f"[ModelWrapper] Non-finite pred_pose_0to1 received at step {self.global_step}"

@@ -4,6 +4,7 @@ import torch.nn.functional as F
 from ..utils.mnn import hard_mnn, soft_mnn, soft_mnn_with_tau, topk_soft_mnn_with_tau
 from ..utils.eight_point import (weighted_eight_point_single, 
     decompose_E_single, estimate_relative_pose_w8pt)
+from ..utils.se3_from_corresp import estimate_relative_pose_se3_weighted
 from ..utils.cam_utils import pixel_to_norm_points
 from ..utils.log_optimal_transport import log_optimal_transport
 from einops import rearrange
@@ -21,16 +22,11 @@ class PoseDecoderSparse(nn.Module):
     Outputs: R:[B,3,3], t_scaled:[B,3,1], s:[B]
     """
 
-    def __init__(self, 
-                 tau: float = 0.2, 
-                 use_hard_mnn: bool = False, 
-                 min_cossim: float = 0.0, 
-                 feature_dim: int = 64,
+    def __init__(self,
+                 choose_closest: bool
                  ):
         super().__init__()
-        self.tau = tau
-        self.use_hard_mnn = use_hard_mnn
-        self.min_cossim = min_cossim
+        self.choose_closest = choose_closest
         bin_score = torch.nn.Parameter(torch.tensor(1.))
         self.register_parameter('bin_score', bin_score)
 
@@ -46,8 +42,17 @@ class PoseDecoderSparse(nn.Module):
         Returns SE(3) per view direction: [B,2,4,4], where [:,0] is 0->1 and [:,1] is 1->0.
         """
         
-        E, _ = estimate_relative_pose_w8pt(kpts0, kpts1, K[:,0], K[:,1], conf,
-            t_scale=t_scale[:,0], choose_closest=True, T_021=gt_pose_0to1)
-        pred = torch.stack([E, E.inverse()], dim=1)  # [B,2,4,4]
-        return pred
+        # Choose between differentiable 8-point (via E) and direct SE3 optimization
+        use_direct_se3 = True
+        if use_direct_se3:
+            T_01 = estimate_relative_pose_se3_weighted(
+                kpts0, kpts1, K[:, 0], K[:, 1], conf.squeeze(-1), t_scale[:, 0])
+            pred = torch.stack([T_01, T_01.inverse()], dim=1)  # [B,2,4,4]
+            return pred
+        else:
+            E, _ = estimate_relative_pose_w8pt(kpts0, kpts1, K[:,0], K[:,1], conf,
+                t_scale=t_scale[:,0], choose_closest=self.choose_closest, 
+                T_021=gt_pose_0to1)
+            pred = torch.stack([E, E.inverse()], dim=1)  # [B,2,4,4]
+            return pred
 

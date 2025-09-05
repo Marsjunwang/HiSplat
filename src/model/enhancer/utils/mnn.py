@@ -63,6 +63,8 @@ def _hard_mnn_batch(S: torch.Tensor):
     M[batch_idx.expand(-1, N0)[mutual], 
       point_idx[mutual], 
       match12[mutual]] = 1.0
+    match12[~mutual] = -1
+    match21[~mutual] = -1
     
     return M, match12, match21
 

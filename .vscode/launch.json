@@ -58,12 +58,11 @@
             "module": "src.main_enhanced",
             "args": [
                 "+experiment=acid_enhancer",
-                "data_loader.train.batch_size=8",
-                "data_loader.train.num_workers=8",
+                "data_loader.train.batch_size=1",
+                "data_loader.train.num_workers=1",
                 "device=auto",
                 "output_dir=EXP_SAVING_PATH",
-                "model/enhancer=enhancer",
-                "model.enhancer.pose_enhancer.name=pose_sparse"
+                "model/enhancer=enhancer_hier",
             ],
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",

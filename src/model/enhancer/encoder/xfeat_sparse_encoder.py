@@ -131,13 +131,9 @@ class XFeatSparseEncoder(nn.Module):
         # TODO：use 1xN conv replace iter? mean flow?
         # match_scores = log_optimal_transport(match_scores, self.bin_score, 100)  
         
-        # with torch.no_grad():
-        #     M, _, _ = hard_mnn(scores=match_scores)
-        #     # 如果-2列全是0,则match21是-1
-        #     col_has_match = M.sum(dim=-2) > 0  # [B, N] - 检查每列是否有匹配
-        #     match21 = M.argmax(dim=-2)  # [B, N]
-        #     match21 = torch.where(col_has_match, match21, -1)  # 全零列设为-1
-        match21 = torch.argmax(match_scores.permute(0,2,1), dim=-1)
+        with torch.no_grad():
+            _, match12, match21 = hard_mnn(scores=match_scores)
+        # match21 = torch.argmax(match_scores.permute(0,2,1), dim=-1)
             
         valid = match21 >= 0
         batch_idx = torch.arange(B).unsqueeze(-1).repeat(1, N)

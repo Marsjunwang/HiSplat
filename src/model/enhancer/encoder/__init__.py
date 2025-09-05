@@ -1,1 +1,2 @@
 from .resnet_encoder import ResnetEncoder
+from .resnet_encoder_v2 import ResnetHierarchicalEncoder

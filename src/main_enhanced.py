@@ -197,12 +197,13 @@ def train(cfg_dict: DictConfig):
 
     if cfg.mode == "train":
         print("begin to train fit!")
-        try:
-            print(f"resume from {checkpoint_path}!!!")
-            trainer.fit(model_wrapper, datamodule=data_module, ckpt_path=checkpoint_path)
-        except:
-            print(f"start from scratch!!!")
-            trainer.fit(model_wrapper, datamodule=data_module)
+        trainer.fit(model_wrapper, datamodule=data_module, ckpt_path=checkpoint_path)
+        # try:
+        #     print(f"resume from {checkpoint_path}!!!")
+        #     trainer.fit(model_wrapper, datamodule=data_module, ckpt_path=checkpoint_path)
+        # except:
+        #     print(f"start from scratch!!!")
+        #     trainer.fit(model_wrapper, datamodule=data_module)
     elif cfg.mode == "test":
         trainer.test(
             model_wrapper,

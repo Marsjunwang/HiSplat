@@ -1,0 +1,6 @@
+weights: "./src/model/enhancer/encoder/xFeat/weights/xfeat.pt"
+detection_threshold: 0.02
+topk: 8000
+refine_window: 5
+refine_tau: 0.2
+feat_size: [32, 32]
