@@ -16,6 +16,7 @@ pose_enhancer:
     num_input_images: 2
     pretrained: True
     channels: 3   # images 3 feat 128
+    eca_fusion_reduce: false
   pose_decoder:
     num_input_features: 1
     num_frames_to_predict_for: 2

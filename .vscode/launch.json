@@ -63,6 +63,7 @@
                 "device=auto",
                 "output_dir=EXP_SAVING_PATH",
                 "model/enhancer=enhancer_hier",
+                "model.enhancer.pose_enhancer.pose_encoder.eca_fusion_reduce=true"
             ],
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",

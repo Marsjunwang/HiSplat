@@ -10,15 +10,23 @@ import numpy as np
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torchvision.models as models
 import torch.utils.model_zoo as model_zoo
-
+from ..utils.model import ECAFusionReduce
 
 class ResNetMultiImageInput(models.ResNet):
     """Constructs a resnet model with varying number of input images.
     Adapted from https://github.com/pytorch/vision/blob/master/torchvision/models/resnet.py
     """
-    def __init__(self, block, layers, num_classes=1000, num_input_images=1, channels=3):
+    def __init__(self, 
+                 block, 
+                 layers, 
+                 num_classes=1000, 
+                 num_input_images=1, 
+                 channels=3,
+                 eca_fusion_reduce=False,
+                 homo_encoder=False):
         super(ResNetMultiImageInput, self).__init__(block, layers)
         self.inplanes = 64
         self.conv1 = nn.Conv2d(
@@ -28,7 +36,10 @@ class ResNetMultiImageInput(models.ResNet):
         self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
         self.layer1 = self._make_layer(block, 64, layers[0])
         self.layer2 = self._make_layer(block, 128, layers[1], stride=2)
-        self.inplanes = 128 * num_input_images
+        if not eca_fusion_reduce and not homo_encoder:
+            self.inplanes = 128 * num_input_images
+        elif eca_fusion_reduce and not homo_encoder:
+            self.eca_fusion_reduce = ECAFusionReduce(channels=128)
         self.layer3 = self._make_layer(block, 256, layers[2], stride=2)
         self.layer4 = self._make_layer(block, 512, layers[3], stride=2)
 
@@ -39,8 +50,12 @@ class ResNetMultiImageInput(models.ResNet):
                 nn.init.constant_(m.weight, 1)
                 nn.init.constant_(m.bias, 0)
 
-
-def resnet_multiimage_input(num_layers, pretrained=False, num_input_images=1, channels=3):
+def resnet_multiimage_input(num_layers, 
+                            pretrained=False, 
+                            num_input_images=1, 
+                            channels=3,
+                            eca_fusion_reduce=False,
+                            homo_encoder=False):
     """Constructs a ResNet model.
     Args:
         num_layers (int): Number of resnet layers. Must be 18 or 50
@@ -50,19 +65,26 @@ def resnet_multiimage_input(num_layers, pretrained=False, num_input_images=1, ch
     assert num_layers in [18, 34, 50], "Can only run with 18 or 50 layer resnet"
     blocks = {18: [2, 2, 2, 2], 34: [3, 4, 6, 3], 50: [3, 4, 6, 3]}[num_layers]
     block_type = {18: models.resnet.BasicBlock, 34: models.resnet.BasicBlock, 50: models.resnet.Bottleneck}[num_layers]
-    model = ResNetMultiImageInput(block_type, blocks, num_input_images=num_input_images, channels=channels)
+    model = ResNetMultiImageInput(
+        block_type, 
+        blocks, 
+        num_input_images=num_input_images, 
+        channels=channels,
+        eca_fusion_reduce=eca_fusion_reduce,
+        homo_encoder=homo_encoder)
 
     if pretrained:
         from torchvision.models import ResNet18_Weights, ResNet34_Weights, ResNet50_Weights
         weights_dict = {18: ResNet18_Weights.IMAGENET1K_V1, 34: ResNet34_Weights.IMAGENET1K_V1, 50: ResNet50_Weights.IMAGENET1K_V1}
         weights = weights_dict[num_layers]
         loaded = torch.hub.load_state_dict_from_url(weights.url)
-        loaded["layer3.0.conv1.weight"] = torch.cat([
-                loaded["layer3.0.conv1.weight"]] * num_input_images, 1
-                ) / num_input_images
-        loaded["layer3.0.downsample.0.weight"] = torch.cat([
-                loaded["layer3.0.downsample.0.weight"]] * num_input_images, 1
-                ) / num_input_images
+        if not eca_fusion_reduce and not homo_encoder:
+            loaded["layer3.0.conv1.weight"] = torch.cat([
+                    loaded["layer3.0.conv1.weight"]] * num_input_images, 1
+                    ) / num_input_images
+            loaded["layer3.0.downsample.0.weight"] = torch.cat([
+                    loaded["layer3.0.downsample.0.weight"]] * num_input_images, 1
+                    ) / num_input_images
         if channels == 3:
             pass
         else:
@@ -87,7 +109,16 @@ class Normalize(nn.Module):
 class ResnetHierarchicalEncoder(nn.Module):
     """Pytorch module for a resnet encoder
     """
-    def __init__(self, num_layers, pretrained, num_input_images=1, channels=3, **kwargs):
+    def __init__(self, 
+                 num_layers, 
+                 pretrained, 
+                 num_input_images=1, 
+                 channels=3, 
+                 eca_fusion_reduce=False,
+                 homo_encoder=False,
+                 spatila_softmax=True,
+                 spatila_softmax_tau=0.2,
+                 **kwargs):
         super(ResnetHierarchicalEncoder, self).__init__()
 
         self.num_ch_enc = np.array([64, 64, 128, 256, 512])
@@ -96,8 +127,18 @@ class ResnetHierarchicalEncoder(nn.Module):
             self.input_normlize = Normalize()
         else:
             self.input_normlize = nn.Identity()
+            
+        self._eca_fusion_reduce = eca_fusion_reduce
+        if eca_fusion_reduce:
+            self.eca_fusion_reduce = ECAFusionReduce(channels=128)
+        self._homo_encoder = homo_encoder
         
-
+        self._spatila_softmax = spatila_softmax
+        # Register tau as a proper leaf Parameter to avoid holding a graph across steps
+        self._spatila_softmax_tau = nn.Parameter(
+            torch.tensor(spatila_softmax_tau, device="cuda").float(), 
+            requires_grad=True)
+        
         resnets = {18: models.resnet18,
                    34: models.resnet34,
                    50: models.resnet50,
@@ -108,7 +149,13 @@ class ResnetHierarchicalEncoder(nn.Module):
             raise ValueError("{} is not a valid number of resnet layers".format(num_layers))
 
         if num_input_images > 1:
-            self.encoder = resnet_multiimage_input(num_layers, pretrained, num_input_images, channels=channels)
+            self.encoder = resnet_multiimage_input(
+                num_layers, 
+                pretrained, 
+                num_input_images, 
+                channels=channels,
+                eca_fusion_reduce=eca_fusion_reduce,
+                homo_encoder=homo_encoder)
         else:
             self.encoder = resnets[num_layers](pretrained)
 
@@ -125,8 +172,90 @@ class ResnetHierarchicalEncoder(nn.Module):
         feat_layer2 = self.encoder.layer2(self.features[-1])
         self.features.append(feat_layer2)
         B2, C, H, W = feat_layer2.shape
-        self.features.append(
-            self.encoder.layer3(feat_layer2.reshape(B2//2, 2*C, H, W)))
+        B = B2 // 2
+        if self._spatila_softmax:
+            spatila_softmax_feat = F.softmax(
+                (feat_layer2 / self._spatila_softmax_tau).view(B2, C, -1), 
+                dim=-1).view(B2, C, H, W)
+            feat_layer2 = feat_layer2 * spatila_softmax_feat
+        if not self._eca_fusion_reduce and not self._homo_encoder:
+            self.features.append(
+                self.encoder.layer3(feat_layer2.reshape(B, 2*C, H, W)))
+        elif self._eca_fusion_reduce and not self._homo_encoder:
+            feat_layer2 = feat_layer2.view(B, 2, C, H, W)
+            self.features.append(
+                self.encoder.layer3(
+                    self.eca_fusion_reduce(feat_layer2[:,0], 
+                                           feat_layer2[:,1])))
+        self.features.append(self.encoder.layer4(self.features[-1]))
+
+        return self.features
+    
+class ResnetHierarchicalHomoEncoder(nn.Module):
+    """Pytorch module for a resnet encoder
+    """
+    def __init__(self, 
+                 num_layers, 
+                 pretrained, 
+                 num_input_images=1, 
+                 channels=3, 
+                 eca_fusion_reduce=False,
+                 **kwargs):
+        super(ResnetHierarchicalEncoder, self).__init__()
+
+        self.num_ch_enc = np.array([64, 64, 128, 256, 512])
+        self.channels = channels
+        if channels == 3:
+            self.input_normlize = Normalize()
+        else:
+            self.input_normlize = nn.Identity()
+            
+        self._eca_fusion_reduce = eca_fusion_reduce
+        if eca_fusion_reduce:
+            self.eca_fusion_reduce = ECAFusionReduce(channels=128)
+        
+        resnets = {18: models.resnet18,
+                   34: models.resnet34,
+                   50: models.resnet50,
+                   101: models.resnet101,
+                   152: models.resnet152}
+
+        if num_layers not in resnets:
+            raise ValueError("{} is not a valid number of resnet layers".format(num_layers))
+
+        if num_input_images > 1:
+            self.encoder = resnet_multiimage_input(
+                num_layers, 
+                pretrained, 
+                num_input_images, 
+                channels=channels,
+                eca_fusion_reduce=eca_fusion_reduce)
+        else:
+            self.encoder = resnets[num_layers](pretrained)
+
+        if num_layers > 34:
+            self.num_ch_enc[1:] *= 4
+
+    def forward(self, input_image):
+        self.features = []
+        x = self.input_normlize(input_image)
+        x = self.encoder.conv1(x)
+        x = self.encoder.bn1(x)
+        self.features.append(self.encoder.relu(x))
+        self.features.append(self.encoder.layer1(self.encoder.maxpool(self.features[-1])))
+        feat_layer2 = self.encoder.layer2(self.features[-1])
+        self.features.append(feat_layer2)
+        B2, C, H, W = feat_layer2.shape
+        B = B2 // 2
+        if not self._eca_fusion_reduce:
+            self.features.append(
+                self.encoder.layer3(feat_layer2.reshape(B, 2*C, H, W)))
+        else:
+            feat_layer2 = feat_layer2.view(B, 2, C, H, W)
+            self.features.append(
+                self.encoder.layer3(
+                    self.eca_fusion_reduce(feat_layer2[:,0], 
+                                           feat_layer2[:,1])))
         self.features.append(self.encoder.layer4(self.features[-1]))
 
         return self.features
