@@ -17,6 +17,8 @@ pose_enhancer:
     pretrained: True
     channels: 3   # images 3 feat 128
     eca_fusion_reduce: false
+    spatila_softmax: false
+    spatila_softmax_tau: 0.2
   pose_decoder:
     num_input_features: 1
     num_frames_to_predict_for: 2

@@ -135,9 +135,10 @@ class ResnetHierarchicalEncoder(nn.Module):
         
         self._spatila_softmax = spatila_softmax
         # Register tau as a proper leaf Parameter to avoid holding a graph across steps
-        self._spatila_softmax_tau = nn.Parameter(
-            torch.tensor(spatila_softmax_tau, device="cuda").float(), 
-            requires_grad=True)
+        if spatila_softmax: 
+            self._spatila_softmax_tau = nn.Parameter(
+                torch.tensor(spatila_softmax_tau, device="cuda").float(), 
+                requires_grad=True)
         
         resnets = {18: models.resnet18,
                    34: models.resnet34,
@@ -177,7 +178,7 @@ class ResnetHierarchicalEncoder(nn.Module):
             spatila_softmax_feat = F.softmax(
                 (feat_layer2 / self._spatila_softmax_tau).view(B2, C, -1), 
                 dim=-1).view(B2, C, H, W)
-            feat_layer2 = feat_layer2 * spatila_softmax_feat
+            feat_layer2 = feat_layer2 * spatila_softmax_feat + feat_layer2
         if not self._eca_fusion_reduce and not self._homo_encoder:
             self.features.append(
                 self.encoder.layer3(feat_layer2.reshape(B, 2*C, H, W)))
