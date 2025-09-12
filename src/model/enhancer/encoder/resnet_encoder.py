@@ -109,7 +109,7 @@ class ResnetEncoder(nn.Module):
         if num_layers not in resnets:
             raise ValueError("{} is not a valid number of resnet layers".format(num_layers))
 
-        if num_input_images > 1:
+        if num_input_images > 1 or channels != 3:
             self.encoder = resnet_multiimage_input(num_layers, pretrained, num_input_images, channels=channels)
         else:
             self.encoder = resnets[num_layers](pretrained)

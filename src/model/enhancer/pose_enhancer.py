@@ -191,6 +191,62 @@ class PoseHierarchicalEnhancer(PoseSeparateEnhancer):
             "gt_pose_0to1": gt_pose_0to1,
         }
         return context, features
+
+class PoseHierarchicalCCLEnhancer(PoseSeparateEnhancer):
+    def __init__(self, cfg: PoseEnhancerCfg):
+        super().__init__(cfg)
+    
+    def forward(
+        self,
+        context: dict,
+        features: Sequence) -> tuple[Dict, Sequence]:
+        if self.cfg.input_data == "image":
+            input_data = context["image"]
+        elif self.cfg.input_data == "feat":  # feat from transformer b v 128 64 64
+            input_data = features[1]
+        elif self.cfg.input_data == "feat_backbone":  # feat from backbone (b v) 128 32 32
+            input_data = rearrange(features[0][-1], "(b v) c h w -> b v c h w", b=context["image"].shape[0])
+        else:
+            raise ValueError(f"Invalid input_data: {self.cfg.input_data}")
+        
+
+        if self.cfg.use_norm_xy:
+            norm_xy = context["norm_xy"]
+            if norm_xy.shape[-2:] != input_data.shape[-2:]:
+                norm_xy = F.interpolate(norm_xy, size=input_data.shape[-2:], 
+                                        mode="bilinear", align_corners=False)
+            input_data_0 = torch.cat([input_data[:,0:1], norm_xy[:,0:1]], dim=2)
+            input_data_1 = torch.cat([input_data[:,1:2], norm_xy[:,1:2]], dim=2)
+            input_data = torch.cat([input_data_0, input_data_1], dim=1)
+        input_data = rearrange(input_data, "b v c h w -> (b v) c h w")
+        pose_feature = self.pose_encoder(input_data)
+        axisangle, translation = self.pose_decoder(pose_feature)
+
+        # Build SE3 with optional FOV overlap constraint
+        pred_pose = self._get_RT_matrix(
+            axisangle,
+            translation,
+            intrinsics=context["intrinsics"],
+            near=context["near"],
+            far=context["far"],
+            image_size=context["image"].shape[-2:],
+        )
+        # Compute predicted relative poses (0->1 and 1->0)
+        pred_01, pred_10 = split_pred_relative_two_directions(pred_pose)
+
+        # Align GT extrinsics to view 0 for consistency with the required world frame.
+        gt_pose_0to1 = None
+        if "extrinsics" in context:
+            extrinsics_aligned = align_world_to_view0(context["extrinsics"]) # [B, V, 4, 4]
+            if extrinsics_aligned.shape[1] >= 2:
+                gt_pose_0to1 = relative_pose_0_to_1(extrinsics_aligned)  # [B, 4, 4]
+        # 将预测返回给上层，避免修改 batch。
+        context["_enhancer_outputs"] = {
+            "pred_pose_0to1": pred_01,
+            "pred_pose_1to0": pred_10,
+            "gt_pose_0to1": gt_pose_0to1,
+        }
+        return context, features
  
    
 class PoseXfeatEnhancer(PoseEnhancer):
