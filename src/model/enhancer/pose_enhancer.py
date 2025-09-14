@@ -195,6 +195,7 @@ class PoseHierarchicalEnhancer(PoseSeparateEnhancer):
 class PoseHierarchicalCCLEnhancer(PoseSeparateEnhancer):
     def __init__(self, cfg: PoseEnhancerCfg):
         super().__init__(cfg)
+        self.homo_ccl = CCL_Module(ccl_mode="global",
     
     def forward(
         self,
@@ -220,6 +221,7 @@ class PoseHierarchicalCCLEnhancer(PoseSeparateEnhancer):
             input_data = torch.cat([input_data_0, input_data_1], dim=1)
         input_data = rearrange(input_data, "b v c h w -> (b v) c h w")
         pose_feature = self.pose_encoder(input_data)
+        
         axisangle, translation = self.pose_decoder(pose_feature)
 
         # Build SE3 with optional FOV overlap constraint
