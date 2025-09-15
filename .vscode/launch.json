@@ -62,9 +62,10 @@
                 "data_loader.train.num_workers=1",
                 "device=auto",
                 "output_dir=EXP_SAVING_PATH",
-                "model/enhancer=enhancer_hier_cc",
-                // "model.enhancer.pose_enhancer.pose_encoder.eca_fusion_reduce=true",
-                // "model.enhancer.pose_enhancer.pose_encoder.spatila_softmax=true"
+                "model/enhancer=enhancer_hier",
+                "model.enhancer.pose_enhancer.pose_encoder.eca_fusion_reduce=true",
+                "model.enhancer.pose_enhancer.pose_encoder.spatila_softmax=true",
+                "model.enhancer.pose_enhancer.pose_encoder.use_norm_xy=true"
             ],
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",

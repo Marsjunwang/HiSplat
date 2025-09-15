@@ -118,6 +118,7 @@ class ResnetHierarchicalEncoder(nn.Module):
                  homo_encoder=False,
                  spatila_softmax=True,
                  spatila_softmax_tau=0.2,
+                 use_norm_xy=False,
                  **kwargs):
         super(ResnetHierarchicalEncoder, self).__init__()
 
@@ -162,8 +163,20 @@ class ResnetHierarchicalEncoder(nn.Module):
 
         if num_layers > 34:
             self.num_ch_enc[1:] *= 4
+            
+        self.use_norm_xy = use_norm_xy
+        if use_norm_xy:
+            self.norm_xy_encoder = nn.Sequential(
+                nn.Conv2d(256, 256, kernel_size=3, padding=1, bias=False, groups=256),
+                nn.BatchNorm2d(256),
+                nn.ReLU(inplace=True),
+                nn.Conv2d(256, 128, kernel_size=1, bias=False),
+                nn.Conv2d(128, 128, kernel_size=3, padding=1, bias=False, groups=128),
+                nn.BatchNorm2d(128),
+                nn.ReLU(inplace=True),
+            )
 
-    def forward(self, input_image):
+    def forward(self, input_image, norm_xy=None):
         self.features = []
         x = self.input_normlize(input_image)
         x = self.encoder.conv1(x)
@@ -176,9 +189,20 @@ class ResnetHierarchicalEncoder(nn.Module):
         B = B2 // 2
         if self._spatila_softmax:
             spatila_softmax_feat = F.softmax(
-                (feat_layer2 / self._spatila_softmax_tau).view(B2, C, -1), 
+                (feat_layer2 / self._spatila_softmax_tau).view(B, 2, C, -1), 
                 dim=-1).view(B2, C, H, W)
             feat_layer2 = feat_layer2 * spatila_softmax_feat + feat_layer2
+            
+        if self.use_norm_xy:
+            with torch.no_grad():
+                scale = input_image.shape[-1] // feat_layer2.shape[-1]
+                norm_xy = norm_xy.unfold(2, scale, scale
+                                         ).unfold(3, scale, scale)
+                norm_xy = norm_xy.permute(0, 4, 5, 1, 2, 3
+                                          ).reshape(B2, -1, H, W)
+            feat_layer2 = self.norm_xy_encoder(
+                torch.cat([feat_layer2, norm_xy], dim=1))
+            
         if not self._eca_fusion_reduce and not self._homo_encoder:
             self.features.append(
                 self.encoder.layer3(feat_layer2.reshape(B, 2*C, H, W)))
