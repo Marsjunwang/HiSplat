@@ -19,6 +19,16 @@ pose_enhancer:
     eca_fusion_reduce: false
     spatila_softmax: false
     spatila_softmax_tau: 0.2
+    homo_ccl:
+      ccl_mode: "global"
+      softmax_scale: 10
+      kernel_size: 3
+      stride: 1
+      dilation: 1
+      padding: "same"
+      tiles_y: 2
+      tiles_x: 2
+      patch_sizes: [16, 32, 64]
   pose_decoder:
     num_input_features: 1
     num_frames_to_predict_for: 2

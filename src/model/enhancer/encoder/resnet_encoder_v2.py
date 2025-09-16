@@ -194,12 +194,13 @@ class ResnetHierarchicalEncoder(nn.Module):
             feat_layer2 = feat_layer2 * spatila_softmax_feat + feat_layer2
             
         if self.use_norm_xy:
-            with torch.no_grad():
-                scale = input_image.shape[-1] // feat_layer2.shape[-1]
-                norm_xy = norm_xy.unfold(2, scale, scale
-                                         ).unfold(3, scale, scale)
-                norm_xy = norm_xy.permute(0, 4, 5, 1, 2, 3
-                                          ).reshape(B2, -1, H, W)
+            # with torch.no_grad():
+            #     scale = input_image.shape[-1] // feat_layer2.shape[-1]
+            #     norm_xy = norm_xy.unfold(2, scale, scale
+            #                              ).unfold(3, scale, scale)
+            #     norm_xy = norm_xy.permute(0, 4, 5, 1, 2, 3
+            #                               ).reshape(B2, -1, H, W)
+            norm_xy = F.interpolate(norm_xy, size=(H, W), mode='bilinear')
             feat_layer2 = self.norm_xy_encoder(
                 torch.cat([feat_layer2, norm_xy], dim=1))
             

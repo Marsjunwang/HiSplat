@@ -37,15 +37,22 @@ class HomoCCL(nn.Module):
                               stride=stride, 
                               dilation=dilation*3,
                               padding=padding)
-        self.regression_net1 = RegressionH4ptNet1()
-        self.regression_net2 = RegressionH4ptNet2()
-        self.regression_net3 = RegressionH4ptNet3()
+        self.regression_net1 = RegressionH4ptNet1(2)
+        self.regression_net2 = RegressionH4ptNet2(2)
+        self.regression_net3 = RegressionH4ptNet3(2)
         self.patch_sizes = patch_sizes
+        # Initialize a learnable parameter for the initial homography motion 
+        # (8 parameters for 4 points)
+        self.init_H_motion = torch.nn.Parameter(
+            torch.zeros([8, 1], device="cuda"), requires_grad=True)
     
-    def forward(self, features):
-        input_datas = [f.clone() for f in features[-3::-1]]
+    def forward(self, features, image_tensor):
+        B = features[0].shape[0] // 2 # 现在只支持 view 2
+        input_datas = [f.clone().view(B, 2, -1, f.shape[-2], f.shape[-1]) 
+                       for f in features[-1:-4:-1]]
         
         H_motions = []
+        H_motions.append(self.init_H_motion.repeat(B, 1, 1))
         featureflows = []
         features_warp = []
         features_warp.append(input_datas[0][:,1])
@@ -59,8 +66,21 @@ class HomoCCL(nn.Module):
             if i == 2:
                 break
             
-            H = solve_DLT(H_motion/(256//patch_size), patch_size=patch_size)
+            H = solve_DLT((H_motions[i]+H_motion)/(256//patch_size), 
+                          patch_size=patch_size)
             H_norm = normalize_homography(H, patch_size)
             features_warp.append(transform_torch(input_datas[i+1][:,1], H_norm))
+        
+        H, W = image_tensor.shape[-2:]
+        assert H == W, "H and W must be the same"
+        
+        H1 = solve_DLT(H_motions[0]+H_motions[1], 
+                       patch_size=H)
+        H1_norm = normalize_homography(H1, H)
+        H2 = solve_DLT(H_motions[0]+H_motions[1]+H_motions[2], 
+                       patch_size=H)
+        H2_norm = normalize_homography(H2, H)
+        
+        
         
         return H_motions

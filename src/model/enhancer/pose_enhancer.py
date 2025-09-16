@@ -18,6 +18,7 @@ from einops import rearrange
 from .utils.transformation_pose import transformation_from_parameters
 from .utils.pose_alignment import (align_world_to_view0, relative_pose_0_to_1, 
                                    split_pred_relative_two_directions)
+from .encoder.homo_ccl import HomoCCL
 
 
 @dataclass
@@ -196,6 +197,8 @@ class PoseHierarchicalEnhancer(PoseSeparateEnhancer):
 class PoseHierarchicalCCLEnhancer(PoseSeparateEnhancer):
     def __init__(self, cfg: PoseEnhancerCfg):
         super().__init__(cfg)
+        
+        self.homo_ccl = HomoCCL(**cfg.pose_encoder['homo_ccl'])
     
     def forward(
         self,
@@ -221,6 +224,8 @@ class PoseHierarchicalCCLEnhancer(PoseSeparateEnhancer):
             input_data = torch.cat([input_data_0, input_data_1], dim=1)
         input_data = rearrange(input_data, "b v c h w -> (b v) c h w")
         pose_feature = self.pose_encoder(input_data)
+
+        pose_feature = self.homo_ccl(pose_feature, context["image"])
         
         axisangle, translation = self.pose_decoder(pose_feature)
 

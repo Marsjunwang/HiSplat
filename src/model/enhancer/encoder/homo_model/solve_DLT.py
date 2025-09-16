@@ -149,20 +149,32 @@ class DLTSolver(nn.Module):
         
         # Pre-initialize all auxiliary matrices on device as buffers
         # Using register_buffer ensures they move with the model to different devices
-        self.register_buffer('M1', torch.tensor(Aux_M1, dtype=torch.float32))
-        self.register_buffer('M2', torch.tensor(Aux_M2, dtype=torch.float32))
-        self.register_buffer('M3', torch.tensor(Aux_M3, dtype=torch.float32))
-        self.register_buffer('M4', torch.tensor(Aux_M4, dtype=torch.float32))
-        self.register_buffer('M5', torch.tensor(Aux_M5, dtype=torch.float32))
-        self.register_buffer('M6', torch.tensor(Aux_M6, dtype=torch.float32))
-        self.register_buffer('M71', torch.tensor(Aux_M71, dtype=torch.float32))
-        self.register_buffer('M72', torch.tensor(Aux_M72, dtype=torch.float32))
-        self.register_buffer('M8', torch.tensor(Aux_M8, dtype=torch.float32))
-        self.register_buffer('Mb', torch.tensor(Aux_Mb, dtype=torch.float32))
+        self.register_buffer('M1', torch.tensor(
+            Aux_M1, dtype=torch.float32, device=device))
+        self.register_buffer('M2', torch.tensor(
+            Aux_M2, dtype=torch.float32, device=device))
+        self.register_buffer('M3', torch.tensor(
+            Aux_M3, dtype=torch.float32, device=device))
+        self.register_buffer('M4', torch.tensor(
+            Aux_M4, dtype=torch.float32, device=device))
+        self.register_buffer('M5', torch.tensor(
+            Aux_M5, dtype=torch.float32, device=device))
+        self.register_buffer('M6', torch.tensor(
+            Aux_M6, dtype=torch.float32, device=device))
+        self.register_buffer('M71', torch.tensor(
+            Aux_M71, dtype=torch.float32, device=device))
+        self.register_buffer('M72', torch.tensor(
+            Aux_M72, dtype=torch.float32, device=device))
+        self.register_buffer('M8', torch.tensor(
+            Aux_M8, dtype=torch.float32, device=device))
+        self.register_buffer('Mb', torch.tensor(
+            Aux_Mb, dtype=torch.float32, device=device))
         
         # Pre-initialize reference points tensor
-        ref_points = torch.tensor([0., 0., patch_size, 0., 0., patch_size, patch_size, patch_size], 
-                                 dtype=torch.float32).reshape(8, 1)
+        ref_points = torch.tensor([0., 0., patch_size, 0., 0., patch_size, 
+                                   patch_size, patch_size], 
+                                 dtype=torch.float32, device=device
+                                 ).reshape(8, 1)
         self.register_buffer('ref_points', ref_points)
         
     def forward(self, pre_4pt_shift):

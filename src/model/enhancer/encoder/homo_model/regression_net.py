@@ -208,6 +208,11 @@ class RegressionH4ptNet3(nn.Module):
         # Conv block 3
         x = F.relu(self.conv3_1(x))
         x = F.relu(self.conv3_2(x))
+        x = self.maxpool3(x)
+        
+        # Conv block 4
+        x = F.relu(self.conv4_1(x))
+        x = F.relu(self.conv4_2(x))
         
         # Fully connected layers
         x = F.relu(self.fc1(x))
