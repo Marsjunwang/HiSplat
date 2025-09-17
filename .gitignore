@@ -5,6 +5,8 @@ outputs/
 debug_visualizations/
 *.pt
 *.pyc
-__pycache__/
+*.pyo
+*$py.class
+**/__pycache__/
 build/
 *.png

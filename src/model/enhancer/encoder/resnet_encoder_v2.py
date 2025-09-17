@@ -166,15 +166,28 @@ class ResnetHierarchicalEncoder(nn.Module):
             
         self.use_norm_xy = use_norm_xy
         if use_norm_xy:
+            # 1. unfold norm_xy encoder
             self.norm_xy_encoder = nn.Sequential(
-                nn.Conv2d(256, 256, kernel_size=3, padding=1, bias=False, groups=256),
-                nn.BatchNorm2d(256),
+                nn.Conv2d(128+128, 128, kernel_size=1, padding=0, bias=False),
+                nn.Conv2d(128, 128, kernel_size=3, padding=1, bias=False, groups=128),
+                nn.BatchNorm2d(128),
                 nn.ReLU(inplace=True),
-                nn.Conv2d(256, 128, kernel_size=1, bias=False),
+                nn.Conv2d(128, 128, kernel_size=1, padding=0, bias=False),
                 nn.Conv2d(128, 128, kernel_size=3, padding=1, bias=False, groups=128),
                 nn.BatchNorm2d(128),
                 nn.ReLU(inplace=True),
             )
+            # # 2. interpolate norm_xy encoder
+            # self.norm_xy_encoder = nn.Sequential(
+            #     nn.Conv2d(128+2, 128, kernel_size=1, padding=0, bias=False),
+            #     nn.Conv2d(128, 128, kernel_size=3, padding=1, bias=False, groups=128),
+            #     nn.BatchNorm2d(128),
+            #     nn.ReLU(inplace=True),
+            #     nn.Conv2d(128, 128, kernel_size=1, padding=0, bias=False),
+            #     nn.Conv2d(128, 128, kernel_size=3, padding=1, bias=False, groups=128),
+            #     nn.BatchNorm2d(128),
+            #     nn.ReLU(inplace=True),
+            # )
 
     def forward(self, input_image, norm_xy=None):
         self.features = []
@@ -194,15 +207,18 @@ class ResnetHierarchicalEncoder(nn.Module):
             feat_layer2 = feat_layer2 * spatila_softmax_feat + feat_layer2
             
         if self.use_norm_xy:
-            # with torch.no_grad():
-            #     scale = input_image.shape[-1] // feat_layer2.shape[-1]
-            #     norm_xy = norm_xy.unfold(2, scale, scale
-            #                              ).unfold(3, scale, scale)
-            #     norm_xy = norm_xy.permute(0, 4, 5, 1, 2, 3
-            #                               ).reshape(B2, -1, H, W)
-            norm_xy = F.interpolate(norm_xy, size=(H, W), mode='bilinear')
+            with torch.no_grad():
+                # 1. unfold norm_xy
+                scale = input_image.shape[-1] // feat_layer2.shape[-1]
+                norm_xy = norm_xy.unfold(2, scale, scale
+                                         ).unfold(3, scale, scale)
+                norm_xy = norm_xy.permute(0, 4, 5, 1, 2, 3
+                                          ).reshape(B2, -1, H, W)
+                # # 2. interpolate norm_xy to feat_layer2.shape
+                # norm_xy = F.interpolate(norm_xy, size=(H, W), mode='bilinear')
+
             feat_layer2 = self.norm_xy_encoder(
-                torch.cat([feat_layer2, norm_xy], dim=1))
+                torch.cat([feat_layer2, norm_xy], dim=1)) + feat_layer2
             
         if not self._eca_fusion_reduce and not self._homo_encoder:
             self.features.append(
