@@ -74,5 +74,41 @@
             },
             "justMyCode": true
         },
+        {
+            "name": "AcceleratedFeatures: Train",
+            "type": "python",
+            "request": "launch",
+            "module": "modules.eval.megadepth1500", //modules.training.train modules/eval/megadepth1500.py
+            "args": [
+              // 在这里填训练参数（可留空）
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}/third_party/accelerated_features",
+            "env": {
+              "PYTHONPATH": "${workspaceFolder}/third_party/accelerated_features:${workspaceFolder}"
+            },
+            "justMyCode": false
+        },
+        {
+            "name": "Eval PoseNet (MegaDepth-1500)",
+            "type": "python",
+            "request": "launch",
+            "module": "tools.eval_posenet",
+            "args": [
+                "output_dir=posenet_eval_md",
+                "+experiment=acid_enhancer",
+                "mode=test",
+                "model/enhancer=enhancer",
+                "model.enhancer.pose_enhancer.use_norm_xy=true",
+                "checkpointing.load=/mnt/data/jun.wang03/HiSplat/outputs/EXP_SAVING_PATH_/checkpoints/epoch_3-step_10000-v1.ckpt"
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}",
+                "MEGADEPTH_DIR": "/mnt/data/jun.wang03/megadepth"
+            },
+            "justMyCode": false
+        }
     ]
 }

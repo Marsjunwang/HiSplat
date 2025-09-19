@@ -28,3 +28,9 @@
 poselib
 kornia==0.7.2
 gdown
+
+h5py 
+imagesize   
+scipy
+
+
