@@ -4,6 +4,7 @@ defaults:
   - model/encoder: costvolume
   - model/decoder: splatting_cuda
   - optional model/enhancer: enhancer_feat # enhancer
+  - optional posenet_train: posenet_train
   - loss: [mse, pose_relative]
 
 wandb:
@@ -81,3 +82,4 @@ trainer:
   val_check_interval: 1.0
   gradient_clip_val: 0.5
   num_sanity_val_steps: 0
+

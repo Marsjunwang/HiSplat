@@ -51,9 +51,9 @@ class LossPoseRelative(Loss[LossPoseRelativeCfg, LossPoseRelativeCfgWrapper]):
     def forward(
         self,
         prediction: DecoderOutput,
-        batch: BatchedExample,
-        gaussians: Gaussians | None,
-        global_step: int,
+        batch: BatchedExample | None = None,
+        gaussians: Gaussians | None = None,
+        global_step: int | None = None,
     ) -> Float[Tensor, ""]:
         pred_01 = getattr(prediction, "pred_pose_0to1", None)
         gt_01 = getattr(prediction, "gt_pose_0to1", None)
@@ -66,6 +66,25 @@ class LossPoseRelative(Loss[LossPoseRelativeCfg, LossPoseRelativeCfgWrapper]):
         self.last_rot_deg_mean = angle.mean() * 180.0 / torch.pi
         self.last_trans_mean = trans.mean()
         return loss
+    
+    def forward_posenet(
+        self,
+        prediction: DecoderOutput,
+        batch: BatchedExample | None = None,
+        gaussians: Gaussians | None = None,
+        global_step: int | None = None,
+    ):
+        pred_01 = getattr(prediction, "pred_pose_0to1", None)
+        gt_01 = getattr(prediction, "gt_pose_0to1", None)
+        if pred_01 is None or gt_01 is None:
+            device = prediction.color.device
+            return torch.zeros((), device=device)
+        angle, trans = self._se3_residual(pred_01, gt_01)
+        loss = self.cfg.weight_rot * angle.mean() + self.cfg.weight_trans * trans.mean()
+        # Store diagnostics for logging (similar to file_context_0)
+        self.last_rot_deg_mean = angle.mean() * 180.0 / torch.pi
+        self.last_trans_mean = trans.mean()
+        return loss, angle, trans
 
     def dynamic_forward(
         self,

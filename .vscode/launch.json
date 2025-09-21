@@ -78,7 +78,7 @@
             "name": "AcceleratedFeatures: Train",
             "type": "python",
             "request": "launch",
-            "module": "modules.eval.megadepth1500", //modules.training.train modules/eval/megadepth1500.py
+            "module": "modules.training.train", //modules.training.train modules/eval/megadepth1500.py
             "args": [
               // 在这里填训练参数（可留空）
             ],
@@ -107,6 +107,25 @@
             "env": {
                 "PYTHONPATH": "${workspaceFolder}",
                 "MEGADEPTH_DIR": "/mnt/data/jun.wang03/megadepth"
+            },
+            "justMyCode": false
+        },
+        {
+            "name": "Train PoseNet on MegaDepth",
+            "type": "python",
+            "request": "launch",
+            "module": "pose_tools.train_posenet",
+            "args": [
+                "+experiment=acid_enhancer",
+                "output_dir=posenet_md_train",
+                "model/enhancer=enhancer",
+                "model.enhancer.pose_enhancer.use_norm_xy=false",
+            ],
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}",
+                "MEGADEPTH_ROOT": "/home/jw11/HiSplat/third_party/accelerated_features/xfeat_data_mini"
             },
             "justMyCode": false
         }

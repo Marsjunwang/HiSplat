@@ -11,13 +11,13 @@ import sys
 def parse_arguments():
     parser = argparse.ArgumentParser(description="XFeat training script.")
 
-    parser.add_argument('--megadepth_root_path', type=str, default='/ssd/guipotje/Data/MegaDepth',
+    parser.add_argument('--megadepth_root_path', type=str, default='/home/jw11/HiSplat/third_party/accelerated_features/xfeat_data_mini',
                         help='Path to the MegaDepth dataset root directory.')
     parser.add_argument('--synthetic_root_path', type=str, default='/homeLocal/guipotje/sshfs/datasets/coco_20k',
                         help='Path to the synthetic dataset root directory.')
-    parser.add_argument('--ckpt_save_path', type=str, required=True,
+    parser.add_argument('--ckpt_save_path', type=str,default='/home/jw11/HiSplat/third_party/accelerated_features/xfeat_data_mini/ckpts',
                         help='Path to save the checkpoints.')
-    parser.add_argument('--training_type', type=str, default='xfeat_default',
+    parser.add_argument('--training_type', type=str, default='xfeat_megadepth',
                         choices=['xfeat_default', 'xfeat_synthetic', 'xfeat_megadepth'],
                         help='Training scheme. xfeat_default uses both megadepth & synthetic warps.')
     parser.add_argument('--batch_size', type=int, default=10,
