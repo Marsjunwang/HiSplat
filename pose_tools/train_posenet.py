@@ -7,12 +7,17 @@ import hydra
 import torch
 import torch.nn.functional as F
 from torch import optim
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, ConcatDataset
 from omegaconf import DictConfig, OmegaConf
 from tqdm import tqdm
+from copy import deepcopy
 
 from jaxtyping import install_import_hook
-
+import glob
+import tqdm as _tqdm
+from modules.dataset.megadepth.megadepth import MegaDepthDataset  # type: ignore
+from torch.utils.tensorboard import SummaryWriter
+import time
 
 with install_import_hook(("src",), ("beartype", "beartype")):
     from src.config import load_typed_root_config
@@ -54,9 +59,6 @@ def se3_residual(pred_01: torch.Tensor, gt_01: torch.Tensor) -> tuple[torch.Tens
 def make_dataloader(megadepth_root: str, batch_size: int, num_workers: int) -> DataLoader:
     repo_root = Path(__file__).resolve().parents[1]
     sys.path.append(str(repo_root / "third_party" / "accelerated_features"))
-    import glob
-    import tqdm as _tqdm
-    from modules.dataset.megadepth.megadepth import MegaDepthDataset  # type: ignore
 
     TRAIN_BASE_PATH = f"{megadepth_root}/train_data/megadepth_indices"
     TRAINVAL_DATA_SOURCE = f"{megadepth_root}/MegaDepth_v1"
@@ -78,7 +80,6 @@ def make_dataloader(megadepth_root: str, batch_size: int, num_workers: int) -> D
         for path in _tqdm.tqdm(npz_paths, desc="[MegaDepth] Loading metadata")
     ]
 
-    from torch.utils.data import ConcatDataset
     dataset = ConcatDataset(datasets)
     loader = DataLoader(
         dataset,
@@ -106,26 +107,26 @@ def adjust_intrinsics_with_scale(K: torch.Tensor, scale: torch.Tensor) -> torch.
 def main(cfg_dict: DictConfig):
     # Merge default train settings if not provided
     default = DefaultTrainCfg()
-    cfg_dict = OmegaConf.merge(
-        cfg_dict,
-        {
-            "mode": "train",
-            "posenet_train": {
-                "lr": default.lr,
-                "weight_decay": default.weight_decay,
-                "steps": default.steps,
-                "batch_size": default.batch_size,
-                "num_workers": default.num_workers,
-                "save_every": default.save_every,
-                "grad_clip": default.grad_clip,
-            },
-        },
-    )
-
+    # cfg_dict = OmegaConf.merge(
+    #     cfg_dict,
+    #     {
+    #         "mode": "train",
+    #         "posenet_train": {
+    #             "lr": default.lr,
+    #             "weight_decay": default.weight_decay,
+    #             "steps": default.steps,
+    #             "batch_size": default.batch_size,
+    #             "num_workers": default.num_workers,
+    #             "save_every": default.save_every,
+    #             "grad_clip": default.grad_clip,
+    #         },
+    #     },
+    # )
     # Output dir
     out_root = Path("outputs") / (cfg_dict.get("output_dir") or "posenet_megadepth")
     ckpt_dir = out_root / "checkpoints"
     ckpt_dir.mkdir(parents=True, exist_ok=True)
+    writer = SummaryWriter(ckpt_dir / "logdir" / time.strftime("%Y_%m_%d-%H_%M_%S"))
 
     # Build typed cfg and set global
     cfg = load_typed_root_config(cfg_dict)
@@ -134,7 +135,6 @@ def main(cfg_dict: DictConfig):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # Build PoseNet enhancer from config
-    from copy import deepcopy
     enh_cfg = deepcopy(cfg.model.enhancer)
     # Ensure pose-only for training
     if hasattr(enh_cfg, "enhance_type"):
@@ -158,6 +158,7 @@ def main(cfg_dict: DictConfig):
         lr=cfg_dict["posenet_train"]["lr"],
         weight_decay=cfg_dict["posenet_train"]["weight_decay"],
     )
+    scheduler = torch.optim.lr_scheduler.StepLR(opt, step_size=30_000, gamma=cfg_dict["posenet_train"]["gamma_steplr"])
 
     # Loss weights
     # weight_rot = float(getattr(cfg.loss.pose_relative, "weight_rot", 1.0)) if hasattr(cfg, "loss") and hasattr(cfg, "loss") else 1.0
@@ -230,15 +231,21 @@ def main(cfg_dict: DictConfig):
         loss.backward()
         torch.nn.utils.clip_grad_norm_(enhancer.parameters(), cfg_dict["posenet_train"]["grad_clip"])
         opt.step()
+        opt.zero_grad()
+        scheduler.step()
 
         global_step += 1
         pbar.set_description(f"Train PoseNet(MD) | step {global_step} | loss {loss.item():.4f} rot_deg {(angle.mean()*180/torch.pi).item():.2f} trans {trans.mean().item():.3f}")
         pbar.update(1)
+        writer.add_scalar("loss", loss.item(), global_step)
+        writer.add_scalar("rot_deg", (angle.mean()*180/torch.pi).item(), global_step)
+        writer.add_scalar("trans", trans.mean().item(), global_step)
+        writer.add_scalar("lr", scheduler.get_last_lr()[0], global_step)
 
         if global_step % cfg_dict["posenet_train"]["save_every"] == 0:
             save_path = ckpt_dir / f"posenet_md_step_{global_step}.pth"
             torch.save({"state_dict": enhancer.state_dict(), "global_step": global_step}, save_path)
-
+        writer.add_scalar("lr", scheduler.get_last_lr()[0], global_step)
     # Final save
     save_path = ckpt_dir / f"posenet_md_final.pth"
     torch.save({"state_dict": enhancer.state_dict(), "global_step": global_step}, save_path)

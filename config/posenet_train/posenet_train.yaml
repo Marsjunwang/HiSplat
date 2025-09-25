@@ -1,7 +1,11 @@
 lr: 3e-4
 weight_decay: 0.0
 steps: 160_000
-batch_size: 8
+batch_size: 10
 num_workers: 4
 save_every: 2000
 grad_clip: 1.0
+gamma_steplr: 0.5
+training_res: [800, 608]
+device_num: 0
+save_ckpt_every: 500
