@@ -2,15 +2,19 @@ import os
 import sys
 from pathlib import Path
 from dataclasses import dataclass
+import torch.distributed as dist
 
 import hydra
 import torch
 import torch.nn.functional as F
 from torch import optim
 from torch.utils.data import DataLoader, ConcatDataset
+from torch.utils.data.distributed import DistributedSampler
 from omegaconf import DictConfig, OmegaConf
 from tqdm import tqdm
 from copy import deepcopy
+from torch.nn.parallel import DistributedDataParallel as DDP
+from pose_tools.eval_posenet_lib import evaluate_posenet_on_megadepth1500
 
 from jaxtyping import install_import_hook
 import glob
@@ -18,6 +22,7 @@ import tqdm as _tqdm
 from modules.dataset.megadepth.megadepth import MegaDepthDataset  # type: ignore
 from torch.utils.tensorboard import SummaryWriter
 import time
+import logging
 
 with install_import_hook(("src",), ("beartype", "beartype")):
     from src.config import load_typed_root_config
@@ -56,7 +61,9 @@ def se3_residual(pred_01: torch.Tensor, gt_01: torch.Tensor) -> tuple[torch.Tens
     return angle, trans_norm
 
 
-def make_dataloader(megadepth_root: str, batch_size: int, num_workers: int) -> DataLoader:
+def make_dataloader(megadepth_root: str, batch_size: int, num_workers: int, 
+    distributed: bool = False, rank: int = 0, world_size: int = 1
+    ) -> DataLoader:
     repo_root = Path(__file__).resolve().parents[1]
     sys.path.append(str(repo_root / "third_party" / "accelerated_features"))
 
@@ -81,10 +88,14 @@ def make_dataloader(megadepth_root: str, batch_size: int, num_workers: int) -> D
     ]
 
     dataset = ConcatDataset(datasets)
+    sampler = None
+    if distributed and world_size > 1:
+        sampler = DistributedSampler(dataset, num_replicas=world_size, rank=rank, shuffle=True, drop_last=True)
     loader = DataLoader(
         dataset,
         batch_size=batch_size,
-        shuffle=True,
+        shuffle=(sampler is None),
+        sampler=sampler,
         num_workers=num_workers,
         pin_memory=True,
         drop_last=True,
@@ -107,35 +118,37 @@ def adjust_intrinsics_with_scale(K: torch.Tensor, scale: torch.Tensor) -> torch.
 def main(cfg_dict: DictConfig):
     # Merge default train settings if not provided
     default = DefaultTrainCfg()
-    # cfg_dict = OmegaConf.merge(
-    #     cfg_dict,
-    #     {
-    #         "mode": "train",
-    #         "posenet_train": {
-    #             "lr": default.lr,
-    #             "weight_decay": default.weight_decay,
-    #             "steps": default.steps,
-    #             "batch_size": default.batch_size,
-    #             "num_workers": default.num_workers,
-    #             "save_every": default.save_every,
-    #             "grad_clip": default.grad_clip,
-    #         },
-    #     },
-    # )
-    # Output dir
-    out_root = Path("outputs") / (cfg_dict.get("output_dir") or "posenet_megadepth")
-    ckpt_dir = out_root / "checkpoints"
-    ckpt_dir.mkdir(parents=True, exist_ok=True)
-    writer = SummaryWriter(ckpt_dir / "logdir" / time.strftime("%Y_%m_%d-%H_%M_%S"))
+
+    # Setup distributed (single-node multi-GPU via torchrun)
+    world_size = int(os.environ.get("WORLD_SIZE", "1"))
+    local_rank = int(os.environ.get("LOCAL_RANK", "0"))
+    is_distributed = world_size > 1 and torch.cuda.is_available()
+    if is_distributed and not dist.is_initialized():
+        dist.init_process_group(backend="nccl", init_method="env://")
+        torch.cuda.set_device(local_rank)
+
+    # Output dir (only rank 0 sets up writer)
+    rank = dist.get_rank() if is_distributed else 0
+    is_main_process = (rank == 0)
+    if is_main_process:
+        out_root = Path("/mnt/data/jun.wang03/HiSplat/outputs") / (cfg_dict.get("output_dir") or "posenet_megadepth")
+        logging.info(f"Output directory: {os.path.abspath(out_root)}")
+        time_str = time.strftime("%Y_%m_%d-%H_%M_%S")
+        ckpt_dir = out_root / time_str / "checkpoints"
+        ckpt_dir.mkdir(parents=True, exist_ok=True)
+        writer = SummaryWriter(out_root / "logdir" / time_str) if is_main_process else None
+    else:
+        writer = None
 
     # Build typed cfg and set global
     cfg = load_typed_root_config(cfg_dict)
     set_cfg(cfg_dict)
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device(f"cuda:{local_rank}" if torch.cuda.is_available() else "cpu")
 
     # Build PoseNet enhancer from config
     enh_cfg = deepcopy(cfg.model.enhancer)
+    print(f"enh_cfg: {enh_cfg}")
     # Ensure pose-only for training
     if hasattr(enh_cfg, "enhance_type"):
         enh_cfg.enhance_type = "pose"
@@ -144,38 +157,83 @@ def main(cfg_dict: DictConfig):
     loss_fn = next((l for l in losses if getattr(l, "name", "") == "pose_relative"), None)
     enhancer.to(device)
     enhancer.train()
+    if is_distributed:
+        enhancer_ddp = DDP(enhancer, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=True)
 
     # Optionally load checkpoint
     if cfg.checkpointing.load is not None and os.path.exists(cfg.checkpointing.load):
         sd = torch.load(cfg.checkpointing.load, map_location="cpu").get("state_dict", None)
         if sd is not None:
             stripped = {".".join(k.split(".")[1:]): v for k, v in sd.items()}
-            enhancer.load_state_dict(stripped, strict=False)
+            enhancer_ddp.load_state_dict(stripped, strict=False)
 
     # Optimizer
+    # Read optimizer from top-level (preferred) or nested under posenet_train (fallback)
+    optimizer_cfg = cfg_dict["posenet_train"].get("optimizer", None)
+    
+    opt_lr = optimizer_cfg.get("lr", cfg_dict["posenet_train"].get("lr", default.lr)) if optimizer_cfg is not None else cfg_dict["posenet_train"].get("lr", default.lr)
     opt = optim.Adam(
-        filter(lambda p: p.requires_grad, enhancer.parameters()),
-        lr=cfg_dict["posenet_train"]["lr"],
+        filter(lambda p: p.requires_grad, enhancer_ddp.parameters()),
+        lr=opt_lr,
         weight_decay=cfg_dict["posenet_train"]["weight_decay"],
     )
-    scheduler = torch.optim.lr_scheduler.StepLR(opt, step_size=30_000, gamma=cfg_dict["posenet_train"]["gamma_steplr"])
+    # Scheduler: warmup + optional cosine from optimizer config
+    steps_total = int(cfg_dict["posenet_train"]["steps"])
+    warm_up_steps = 0
+    use_cosine = False
+    if optimizer_cfg is not None:
+        warm_up_steps = int(optimizer_cfg.get("warm_up_steps", 0) or 0)
+        use_cosine = bool(optimizer_cfg.get("cosine_lr", False))
+    if use_cosine:
+        base_lr = float(opt_lr)
+        pct_start = max(0.0, min(0.9, (warm_up_steps / steps_total) if steps_total > 0 else 0.01))
+        scheduler = torch.optim.lr_scheduler.OneCycleLR(
+            opt,
+            max_lr=base_lr,
+            total_steps=steps_total,
+            pct_start=pct_start,
+            cycle_momentum=False,
+            anneal_strategy="cos",
+        )
+    else:
+        if warm_up_steps > 0:
+            scheduler = torch.optim.lr_scheduler.LinearLR(
+                opt,
+                start_factor=1 / max(1, warm_up_steps),
+                end_factor=1.0,
+                total_iters=warm_up_steps,
+            )
+        else:
+            scheduler = torch.optim.lr_scheduler.ConstantLR(opt, factor=1.0, total_iters=1)
 
-    # Loss weights
-    # weight_rot = float(getattr(cfg.loss.pose_relative, "weight_rot", 1.0)) if hasattr(cfg, "loss") and hasattr(cfg, "loss") else 1.0
-    # weight_trans = float(getattr(cfg.loss.pose_relative, "weight_trans", 1.0)) if hasattr(cfg, "loss") and hasattr(cfg, "loss") else 1.0
 
     # Data
     megadepth_root = os.environ.get("MEGADEPTH_ROOT", "/mnt/data/jun.wang03/xfeat_data")
-    loader = make_dataloader(megadepth_root, cfg_dict["posenet_train"]["batch_size"], cfg_dict["posenet_train"]["num_workers"])
+    loader = make_dataloader(
+        megadepth_root,
+        cfg_dict["posenet_train"]["batch_size"],
+        cfg_dict["posenet_train"]["num_workers"],
+        distributed=is_distributed,
+        rank=rank,
+        world_size=world_size,
+    )
 
     global_step = 0
-    pbar = tqdm(total=cfg_dict["posenet_train"]["steps"], desc="Train PoseNet(MegaDepth)")
+    if is_main_process:
+        pbar = tqdm(total=cfg_dict["posenet_train"]["steps"], desc="Train PoseNet(MegaDepth)")
+    else:
+        pbar = None
     data_iter = iter(loader)
+    current_epoch = 0
 
     while global_step < cfg_dict["posenet_train"]["steps"]:
         try:
             batch_md = next(data_iter)
         except StopIteration:
+            # New epoch for distributed sampler to reshuffle
+            if is_distributed and hasattr(loader, "sampler") and hasattr(loader.sampler, "set_epoch"):
+                current_epoch += 1
+                loader.sampler.set_epoch(current_epoch)
             data_iter = iter(loader)
             batch_md = next(data_iter)
 
@@ -214,9 +272,12 @@ def main(cfg_dict: DictConfig):
             "far": far,
         }
 
-        enhancer.zero_grad(set_to_none=True)
+        enhancer_ddp.zero_grad(set_to_none=True)
         # Forward
-        ctx, _ = enhancer(context, ())
+        if hasattr(enhancer, "get_batch_shim"):
+            context = enhancer.get_batch_shim()(
+                {"context": context})["context"]
+        ctx, _ = enhancer_ddp(context, ())
         eo = ctx.get("_enhancer_outputs", {}) if isinstance(ctx, dict) else {}
         pred_01 = eo.get("pred_pose_0to1", None)
         if pred_01 is None:
@@ -229,27 +290,64 @@ def main(cfg_dict: DictConfig):
         loss, angle, trans = loss_fn.forward_posenet(output, None, None, global_step)
 
         loss.backward()
-        torch.nn.utils.clip_grad_norm_(enhancer.parameters(), cfg_dict["posenet_train"]["grad_clip"])
+        torch.nn.utils.clip_grad_norm_(enhancer_ddp.parameters(), cfg_dict["posenet_train"]["grad_clip"])
         opt.step()
         opt.zero_grad()
         scheduler.step()
 
         global_step += 1
-        pbar.set_description(f"Train PoseNet(MD) | step {global_step} | loss {loss.item():.4f} rot_deg {(angle.mean()*180/torch.pi).item():.2f} trans {trans.mean().item():.3f}")
-        pbar.update(1)
-        writer.add_scalar("loss", loss.item(), global_step)
-        writer.add_scalar("rot_deg", (angle.mean()*180/torch.pi).item(), global_step)
-        writer.add_scalar("trans", trans.mean().item(), global_step)
-        writer.add_scalar("lr", scheduler.get_last_lr()[0], global_step)
+        if pbar is not None and is_main_process:
+            pbar.set_description(f"Train PoseNet(MD) | step {global_step} | loss {loss.item():.4f} rot_deg {(angle.mean()*180/torch.pi).item():.2f} trans {trans.mean().item():.3f}")
+            pbar.update(1)
+        if writer is not None and is_main_process:
+            writer.add_scalar("loss", loss.item(), global_step)
+            writer.add_scalar("rot_deg", (angle.mean()*180/torch.pi).item(), global_step)
+            writer.add_scalar("trans", trans.mean().item(), global_step)
+            writer.add_scalar("lr", scheduler.get_last_lr()[0], global_step)
 
         if global_step % cfg_dict["posenet_train"]["save_every"] == 0:
-            save_path = ckpt_dir / f"posenet_md_step_{global_step}.pth"
-            torch.save({"state_dict": enhancer.state_dict(), "global_step": global_step}, save_path)
-        writer.add_scalar("lr", scheduler.get_last_lr()[0], global_step)
+            if is_distributed:
+                dist.barrier()
+            if is_main_process:
+                save_path = ckpt_dir / f"posenet_md_step_{global_step}.pth"
+                state_dict = enhancer_ddp.module.state_dict() if hasattr(enhancer_ddp, "module") else enhancer_ddp.state_dict()
+                torch.save({"state_dict": state_dict, "global_step": global_step}, save_path)
+
+                # In-process evaluation without Hydra/CLI
+                base_name = (cfg_dict.get("output_dir") or "posenet_megadepth")
+                eval_output_dir_name = f"{base_name}_eval_step_{global_step}"
+                try:
+                    summary = evaluate_posenet_on_megadepth1500(
+                        enhancer=enhancer_ddp,
+                        device=device,
+                        output_dir=out_root / time_str/ "eval" / eval_output_dir_name,
+                        num_workers=4,
+                        batch_size=1,
+                    )
+                    if writer is not None and isinstance(summary, dict):
+                        if (v := summary.get("rot_deg_mean")) is not None:
+                            writer.add_scalar("eval/rot_deg_mean", float(v), global_step)
+                        if (v := summary.get("trans_l2_mean")) is not None:
+                            writer.add_scalar("eval/trans_l2_mean", float(v), global_step)
+                        maa = summary.get("maa_auc", {}) or {}
+                        for k, v in maa.items():
+                            writer.add_scalar(f"eval/maa_{k}", float(v), global_step)
+                        macc = summary.get("macc", {}) or {}
+                        for k, v in macc.items():
+                            writer.add_scalar(f"eval/{k}", float(v), global_step)
+                except Exception as e:
+                    print(f"Evaluation failed at step {global_step}: {e}")
+            if is_distributed:
+                dist.barrier()
+
     # Final save
-    save_path = ckpt_dir / f"posenet_md_final.pth"
-    torch.save({"state_dict": enhancer.state_dict(), "global_step": global_step}, save_path)
-    print(f"Saved final PoseNet checkpoint to {save_path}")
+    if is_main_process:
+        save_path = ckpt_dir / f"posenet_md_final.pth"
+        state_dict = enhancer_ddp.module.state_dict() if hasattr(enhancer_ddp, "module") else enhancer_ddp.state_dict()
+        torch.save({"state_dict": state_dict, "global_step": global_step}, save_path)
+        print(f"Saved final PoseNet checkpoint to {save_path}")
+    if is_distributed and dist.is_initialized():
+        dist.destroy_process_group()
 
 
 if __name__ == "__main__":

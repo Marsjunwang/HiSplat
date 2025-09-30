@@ -122,10 +122,10 @@
                 "model.enhancer.pose_enhancer.use_norm_xy=false",
             ],
             "console": "integratedTerminal",
-            "cwd": "${workspaceFolder}",
+            "cwd": "${workspaceFolder}/third_party/accelerated_features",
             "env": {
                 "PYTHONPATH": "${workspaceFolder}",
-                "MEGADEPTH_ROOT": "/home/jw11/HiSplat/third_party/accelerated_features/xfeat_data_mini"
+                "MEGADEPTH_ROOT": "/mnt/data/jun.wang03/xfeat_data"
             },
             "justMyCode": false
         }
