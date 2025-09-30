@@ -23,6 +23,7 @@ from modules.dataset.megadepth.megadepth import MegaDepthDataset  # type: ignore
 from torch.utils.tensorboard import SummaryWriter
 import time
 import logging
+import contextlib
 
 with install_import_hook(("src",), ("beartype", "beartype")):
     from src.config import load_typed_root_config
@@ -159,24 +160,30 @@ def main(cfg_dict: DictConfig):
     enhancer.train()
     if is_distributed:
         enhancer_ddp = DDP(enhancer, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=True)
+        train_module = enhancer_ddp
+    else:
+        train_module = enhancer
 
     # Optionally load checkpoint
     if cfg.checkpointing.load is not None and os.path.exists(cfg.checkpointing.load):
         sd = torch.load(cfg.checkpointing.load, map_location="cpu").get("state_dict", None)
         if sd is not None:
             stripped = {".".join(k.split(".")[1:]): v for k, v in sd.items()}
-            enhancer_ddp.load_state_dict(stripped, strict=False)
+            target = train_module.module if hasattr(train_module, "module") else train_module
+            target.load_state_dict(stripped, strict=False)
 
     # Optimizer
     # Read optimizer from top-level (preferred) or nested under posenet_train (fallback)
     optimizer_cfg = cfg_dict["posenet_train"].get("optimizer", None)
     
     opt_lr = optimizer_cfg.get("lr", cfg_dict["posenet_train"].get("lr", default.lr)) if optimizer_cfg is not None else cfg_dict["posenet_train"].get("lr", default.lr)
-    opt = optim.Adam(
-        filter(lambda p: p.requires_grad, enhancer_ddp.parameters()),
-        lr=opt_lr,
-        weight_decay=cfg_dict["posenet_train"]["weight_decay"],
-    )
+    opt_name = (optimizer_cfg.get("type", "adam") if optimizer_cfg is not None else "adam").lower()
+    weight_decay = cfg_dict["posenet_train"].get("weight_decay", default.weight_decay)
+    parameters = filter(lambda p: p.requires_grad, train_module.parameters())
+    if opt_name == "adamw":
+        opt = optim.AdamW(parameters, lr=opt_lr, weight_decay=weight_decay)
+    else:
+        opt = optim.Adam(parameters, lr=opt_lr, weight_decay=weight_decay)
     # Scheduler: warmup + optional cosine from optimizer config
     steps_total = int(cfg_dict["posenet_train"]["steps"])
     warm_up_steps = 0
@@ -206,6 +213,19 @@ def main(cfg_dict: DictConfig):
         else:
             scheduler = torch.optim.lr_scheduler.ConstantLR(opt, factor=1.0, total_iters=1)
 
+    # AMP / Accumulation / EMA
+    use_amp = bool(cfg_dict["posenet_train"].get("use_amp", True))
+    accum_steps = int(cfg_dict["posenet_train"].get("accum_steps", 1))
+    scaler = torch.cuda.amp.GradScaler(enabled=use_amp)
+
+    ema_decay = float(cfg_dict["posenet_train"].get("ema_decay", 0.0) or 0.0)
+    ema_model = None
+    if ema_decay > 0.0:
+        base_model = train_module.module if hasattr(train_module, "module") else train_module
+        ema_model = deepcopy(base_model).eval()
+        for p in ema_model.parameters():
+            p.requires_grad_(False)
+
 
     # Data
     megadepth_root = os.environ.get("MEGADEPTH_ROOT", "/mnt/data/jun.wang03/xfeat_data")
@@ -219,6 +239,7 @@ def main(cfg_dict: DictConfig):
     )
 
     global_step = 0
+    micro_step = 0
     if is_main_process:
         pbar = tqdm(total=cfg_dict["posenet_train"]["steps"], desc="Train PoseNet(MegaDepth)")
     else:
@@ -272,80 +293,122 @@ def main(cfg_dict: DictConfig):
             "far": far,
         }
 
-        enhancer_ddp.zero_grad(set_to_none=True)
+        # Optimizer zero_grad only at accumulation window start
+        if (global_step == 0 and micro_step == 0) or (micro_step % accum_steps == 0):
+            opt.zero_grad(set_to_none=True)
+
         # Forward
         if hasattr(enhancer, "get_batch_shim"):
             context = enhancer.get_batch_shim()(
                 {"context": context})["context"]
-        ctx, _ = enhancer_ddp(context, ())
-        eo = ctx.get("_enhancer_outputs", {}) if isinstance(ctx, dict) else {}
-        pred_01 = eo.get("pred_pose_0to1", None)
-        if pred_01 is None:
-            continue
 
-        gt_01 = batch_md["T_0to1"] 
-        output = DecoderOutput(color=images)# [B,4,4]
-        output.pred_pose_0to1 = pred_01
-        output.gt_pose_0to1 = gt_01
-        loss, angle, trans = loss_fn.forward_posenet(output, None, None, global_step)
+        autocast_ctx = torch.cuda.amp.autocast if torch.cuda.is_available() else contextlib.nullcontext
+        with autocast_ctx(enabled=use_amp):
+            ctx, _ = train_module(context, ())
+            eo = ctx.get("_enhancer_outputs", {}) if isinstance(ctx, dict) else {}
+            pred_01 = eo.get("pred_pose_0to1", None)
+            if pred_01 is None:
+                micro_step += 1
+                continue
 
-        loss.backward()
-        torch.nn.utils.clip_grad_norm_(enhancer_ddp.parameters(), cfg_dict["posenet_train"]["grad_clip"])
-        opt.step()
-        opt.zero_grad()
-        scheduler.step()
+            gt_01 = batch_md["T_0to1"]
+            output = DecoderOutput(color=images)
+            output.pred_pose_0to1 = pred_01
+            output.gt_pose_0to1 = gt_01
+            loss, angle, trans = loss_fn.forward_posenet(output, None, None, global_step)
 
-        global_step += 1
-        if pbar is not None and is_main_process:
-            pbar.set_description(f"Train PoseNet(MD) | step {global_step} | loss {loss.item():.4f} rot_deg {(angle.mean()*180/torch.pi).item():.2f} trans {trans.mean().item():.3f}")
-            pbar.update(1)
-        if writer is not None and is_main_process:
-            writer.add_scalar("loss", loss.item(), global_step)
-            writer.add_scalar("rot_deg", (angle.mean()*180/torch.pi).item(), global_step)
-            writer.add_scalar("trans", trans.mean().item(), global_step)
-            writer.add_scalar("lr", scheduler.get_last_lr()[0], global_step)
+        # Backward with grad accumulation
+        scaled_loss = loss / max(1, accum_steps)
+        if use_amp:
+            scaler.scale(scaled_loss).backward()
+        else:
+            scaled_loss.backward()
 
-        if global_step % cfg_dict["posenet_train"]["save_every"] == 0:
-            if is_distributed:
-                dist.barrier()
-            if is_main_process:
-                save_path = ckpt_dir / f"posenet_md_step_{global_step}.pth"
-                state_dict = enhancer_ddp.module.state_dict() if hasattr(enhancer_ddp, "module") else enhancer_ddp.state_dict()
-                torch.save({"state_dict": state_dict, "global_step": global_step}, save_path)
+        step_now = ((micro_step + 1) % accum_steps) == 0
+        if step_now:
+            if cfg_dict["posenet_train"].get("grad_clip", 0.0) and cfg_dict["posenet_train"]["grad_clip"] > 0:
+                if use_amp:
+                    scaler.unscale_(opt)
+                torch.nn.utils.clip_grad_norm_(train_module.parameters(), cfg_dict["posenet_train"]["grad_clip"]) 
+            if use_amp:
+                scaler.step(opt)
+                scaler.update()
+            else:
+                opt.step()
+            scheduler.step()
 
-                # In-process evaluation without Hydra/CLI
-                base_name = (cfg_dict.get("output_dir") or "posenet_megadepth")
-                eval_output_dir_name = f"{base_name}_eval_step_{global_step}"
-                try:
-                    summary = evaluate_posenet_on_megadepth1500(
-                        enhancer=enhancer_ddp,
-                        device=device,
-                        output_dir=out_root / time_str/ "eval" / eval_output_dir_name,
-                        num_workers=4,
-                        batch_size=1,
-                    )
-                    if writer is not None and isinstance(summary, dict):
-                        if (v := summary.get("rot_deg_mean")) is not None:
-                            writer.add_scalar("eval/rot_deg_mean", float(v), global_step)
-                        if (v := summary.get("trans_l2_mean")) is not None:
-                            writer.add_scalar("eval/trans_l2_mean", float(v), global_step)
-                        maa = summary.get("maa_auc", {}) or {}
-                        for k, v in maa.items():
-                            writer.add_scalar(f"eval/maa_{k}", float(v), global_step)
-                        macc = summary.get("macc", {}) or {}
-                        for k, v in macc.items():
-                            writer.add_scalar(f"eval/{k}", float(v), global_step)
-                except Exception as e:
-                    print(f"Evaluation failed at step {global_step}: {e}")
-            if is_distributed:
-                dist.barrier()
+            # EMA update
+            if ema_model is not None:
+                with torch.no_grad():
+                    msd = (train_module.module.state_dict() if hasattr(train_module, "module") else train_module.state_dict())
+                    for k, v in ema_model.state_dict().items():
+                        src = msd[k]
+                        if v.dtype.is_floating_point:
+                            v.mul_(ema_decay).add_(src, alpha=1.0 - ema_decay)
+                        else:
+                            v.copy_(src)
+
+            global_step += 1
+            if pbar is not None and is_main_process:
+                pbar.set_description(f"Train PoseNet(MD) | step {global_step} | loss {loss.item():.4f} rot_deg {(angle.mean()*180/torch.pi).item():.2f} trans {trans.mean().item():.3f}")
+                pbar.update(1)
+            if writer is not None and is_main_process:
+                writer.add_scalar("loss", loss.item(), global_step)
+                writer.add_scalar("rot_deg", (angle.mean()*180/torch.pi).item(), global_step)
+                writer.add_scalar("trans", trans.mean().item(), global_step)
+                writer.add_scalar("lr", scheduler.get_last_lr()[0], global_step)
+
+            if global_step % cfg_dict["posenet_train"]["save_every"] == 0:
+                if is_distributed:
+                    dist.barrier()
+                if is_main_process:
+                    save_path = ckpt_dir / f"posenet_md_step_{global_step}.pth"
+                    state_dict = train_module.module.state_dict() if hasattr(train_module, "module") else train_module.state_dict()
+                    torch.save({"state_dict": state_dict, "global_step": global_step}, save_path)
+
+                    if ema_model is not None:
+                        ema_path = ckpt_dir / f"posenet_md_step_{global_step}_ema.pth"
+                        torch.save({"state_dict": ema_model.state_dict(), "global_step": global_step}, ema_path)
+
+                    # In-process evaluation without Hydra/CLI
+                    base_name = (cfg_dict.get("output_dir") or "posenet_megadepth")
+                    eval_output_dir_name = f"{base_name}_eval_step_{global_step}"
+                    try:
+                        eval_module = ema_model if ema_model is not None else train_module
+                        summary = evaluate_posenet_on_megadepth1500(
+                            enhancer=eval_module,
+                            device=device,
+                            output_dir=out_root / time_str/ "eval" / eval_output_dir_name,
+                            num_workers=4,
+                            batch_size=1,
+                        )
+                        if writer is not None and isinstance(summary, dict):
+                            if (v := summary.get("rot_deg_mean")) is not None:
+                                writer.add_scalar("eval/rot_deg_mean", float(v), global_step)
+                            if (v := summary.get("trans_l2_mean")) is not None:
+                                writer.add_scalar("eval/trans_l2_mean", float(v), global_step)
+                            maa = summary.get("maa_auc", {}) or {}
+                            for k, v in maa.items():
+                                writer.add_scalar(f"eval/maa_{k}", float(v), global_step)
+                            macc = summary.get("macc", {}) or {}
+                            for k, v in macc.items():
+                                writer.add_scalar(f"eval/{k}", float(v), global_step)
+                    except Exception as e:
+                        print(f"Evaluation failed at step {global_step}: {e}")
+                if is_distributed:
+                    dist.barrier()
+
+        micro_step += 1
 
     # Final save
     if is_main_process:
         save_path = ckpt_dir / f"posenet_md_final.pth"
-        state_dict = enhancer_ddp.module.state_dict() if hasattr(enhancer_ddp, "module") else enhancer_ddp.state_dict()
+        state_dict = train_module.module.state_dict() if hasattr(train_module, "module") else train_module.state_dict()
         torch.save({"state_dict": state_dict, "global_step": global_step}, save_path)
         print(f"Saved final PoseNet checkpoint to {save_path}")
+        if ema_model is not None:
+            ema_path = ckpt_dir / f"posenet_md_final_ema.pth"
+            torch.save({"state_dict": ema_model.state_dict(), "global_step": global_step}, ema_path)
     if is_distributed and dist.is_initialized():
         dist.destroy_process_group()
 
