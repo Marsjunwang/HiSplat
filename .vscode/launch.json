@@ -119,13 +119,14 @@
                 "+experiment=acid_enhancer",
                 "output_dir=posenet_md_train",
                 "model/enhancer=enhancer",
-                "model.enhancer.pose_enhancer.use_norm_xy=false",
+                "model.enhancer.pose_enhancer.use_norm_xy=true",
+                "posenet_train.batch_size=2"
             ],
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}/third_party/accelerated_features",
             "env": {
                 "PYTHONPATH": "${workspaceFolder}",
-                "MEGADEPTH_ROOT": "/mnt/data/jun.wang03/xfeat_data"
+                "MEGADEPTH_ROOT": "/home/jw11/HiSplat/third_party/accelerated_features/xfeat_data_mini" //"/mnt/data/jun.wang03/xfeat_data_mini"
             },
             "justMyCode": false
         }

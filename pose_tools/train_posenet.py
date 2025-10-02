@@ -132,7 +132,9 @@ def main(cfg_dict: DictConfig):
     rank = dist.get_rank() if is_distributed else 0
     is_main_process = (rank == 0)
     if is_main_process:
-        out_root = Path("/mnt/data/jun.wang03/HiSplat/outputs") / (cfg_dict.get("output_dir") or "posenet_megadepth")
+        # 获取当前脚本文件的路径
+        file_dir = os.path.dirname(os.path.abspath(__file__))
+        out_root = Path(file_dir+"/../outputs") / (cfg_dict.get("output_dir") or "posenet_megadepth")
         logging.info(f"Output directory: {os.path.abspath(out_root)}")
         time_str = time.strftime("%Y_%m_%d-%H_%M_%S")
         ckpt_dir = out_root / time_str / "checkpoints"
@@ -246,8 +248,12 @@ def main(cfg_dict: DictConfig):
         pbar = None
     data_iter = iter(loader)
     current_epoch = 0
-    autocast_ctx = torch.cuda.amp.autocast \
-        if torch.cuda.is_available() else contextlib.nullcontext
+    # Define a callable that returns a context manager; avoid passing unsupported kwargs to nullcontext
+    if torch.cuda.is_available():
+        def autocast_ctx():
+            return torch.cuda.amp.autocast(enabled=use_amp)
+    else:
+        autocast_ctx = contextlib.nullcontext
     while global_step < cfg_dict["posenet_train"]["steps"]:
         # Measure data loading time per iteration
         t_data_start = time.time()
@@ -310,7 +316,7 @@ def main(cfg_dict: DictConfig):
 
         # Measure forward(inference) time
         t_fwd_start = time.time()
-        with autocast_ctx(enabled=use_amp):
+        with autocast_ctx():
             ctx, _ = train_module(context, ())
             eo = ctx.get("_enhancer_outputs", {}) if isinstance(ctx, dict) else {}
             pred_01 = eo.get("pred_pose_0to1", None)
