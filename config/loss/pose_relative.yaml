@@ -1,4 +1,6 @@
 pose_relative:
   weight_rot: 1.0
   weight_trans: 1.0
+  weight_trans_dir: 1.0
+  weight_trans_scale: 1.0
 

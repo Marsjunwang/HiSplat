@@ -120,7 +120,8 @@
                 "output_dir=posenet_md_train",
                 "model/enhancer=enhancer",
                 "model.enhancer.pose_enhancer.use_norm_xy=true",
-                "posenet_train.batch_size=2"
+                "posenet_train.batch_size=2",
+                "loss.pose_relative.weight_trans_scale=0.0"
             ],
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}/third_party/accelerated_features",
