@@ -178,7 +178,7 @@ def main(cfg_dict: DictConfig):
     
     opt_lr = optimizer_cfg.get("lr", cfg_dict["posenet_train"].get("lr", default.lr)) if optimizer_cfg is not None else cfg_dict["posenet_train"].get("lr", default.lr)
     opt_name = (optimizer_cfg.get("type", "adam") if optimizer_cfg is not None else "adam").lower()
-    weight_decay = cfg_dict["posenet_train"].get("weight_decay", default.weight_decay)
+    weight_decay = optimizer_cfg.get("weight_decay", default.weight_decay)
     parameters = filter(lambda p: p.requires_grad, train_module.parameters())
     if opt_name == "adamw":
         opt = optim.AdamW(parameters, lr=opt_lr, weight_decay=weight_decay)
@@ -246,7 +246,8 @@ def main(cfg_dict: DictConfig):
         pbar = None
     data_iter = iter(loader)
     current_epoch = 0
-
+    autocast_ctx = torch.cuda.amp.autocast \
+        if torch.cuda.is_available() else contextlib.nullcontext
     while global_step < cfg_dict["posenet_train"]["steps"]:
         try:
             batch_md = next(data_iter)
@@ -302,7 +303,6 @@ def main(cfg_dict: DictConfig):
             context = enhancer.get_batch_shim()(
                 {"context": context})["context"]
 
-        autocast_ctx = torch.cuda.amp.autocast if torch.cuda.is_available() else contextlib.nullcontext
         with autocast_ctx(enabled=use_amp):
             ctx, _ = train_module(context, ())
             eo = ctx.get("_enhancer_outputs", {}) if isinstance(ctx, dict) else {}
@@ -315,7 +315,8 @@ def main(cfg_dict: DictConfig):
             output = DecoderOutput(color=images)
             output.pred_pose_0to1 = pred_01
             output.gt_pose_0to1 = gt_01
-            loss, angle, trans = loss_fn.forward_posenet(output, None, None, global_step)
+            loss, angle, trans = loss_fn.forward_posenet(
+                output, None, None, global_step)
 
         # Backward with grad accumulation
         scaled_loss = loss / max(1, accum_steps)

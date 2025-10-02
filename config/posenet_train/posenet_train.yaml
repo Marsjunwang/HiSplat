@@ -1,4 +1,3 @@
-weight_decay: 0.0
 steps: 320_000 #160_000
 batch_size: 20
 num_workers: 10
@@ -8,7 +7,12 @@ gamma_steplr: 0.5
 training_res: [800, 608]
 device_num: 0
 save_ckpt_every: 500
+use_amp: false
+accum_steps: 1
+ema_decay: 0.0
 optimizer:
+  type: adamw
   lr: 2.e-4
   warm_up_steps: 4000
   cosine_lr: true
+  weight_decay: 0.01
