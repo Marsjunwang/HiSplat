@@ -249,8 +249,12 @@ def main(cfg_dict: DictConfig):
     autocast_ctx = torch.cuda.amp.autocast \
         if torch.cuda.is_available() else contextlib.nullcontext
     while global_step < cfg_dict["posenet_train"]["steps"]:
+        # Measure data loading time per iteration
+        t_data_start = time.time()
+        data_time = 0.0
         try:
             batch_md = next(data_iter)
+            data_time = time.time() - t_data_start
         except StopIteration:
             # New epoch for distributed sampler to reshuffle
             if is_distributed and hasattr(loader, "sampler") and hasattr(loader.sampler, "set_epoch"):
@@ -258,6 +262,7 @@ def main(cfg_dict: DictConfig):
                 loader.sampler.set_epoch(current_epoch)
             data_iter = iter(loader)
             batch_md = next(data_iter)
+            data_time = time.time() - t_data_start
 
         # Move to device
         for k, v in list(batch_md.items()):
@@ -303,6 +308,8 @@ def main(cfg_dict: DictConfig):
             context = enhancer.get_batch_shim()(
                 {"context": context})["context"]
 
+        # Measure forward(inference) time
+        t_fwd_start = time.time()
         with autocast_ctx(enabled=use_amp):
             ctx, _ = train_module(context, ())
             eo = ctx.get("_enhancer_outputs", {}) if isinstance(ctx, dict) else {}
@@ -317,6 +324,7 @@ def main(cfg_dict: DictConfig):
             output.gt_pose_0to1 = gt_01
             loss, angle, trans = loss_fn.forward_posenet(
                 output, None, None, global_step)
+            fwd_time = time.time() - t_fwd_start
 
         # Backward with grad accumulation
         scaled_loss = loss / max(1, accum_steps)
@@ -353,11 +361,25 @@ def main(cfg_dict: DictConfig):
             if pbar is not None and is_main_process:
                 pbar.set_description(f"Train PoseNet(MD) | step {global_step} | loss {loss.item():.4f} rot_deg {(angle.mean()*180/torch.pi).item():.2f} trans {trans.mean().item():.3f}")
                 pbar.update(1)
+                # Show timing (ms) in tqdm postfix
+                try:
+                    pbar.set_postfix({
+                        "data_ms": f"{data_time * 1000.0:.1f}",
+                        "fwd_ms": f"{fwd_time * 1000.0:.1f}",
+                    })
+                except Exception:
+                    pass
             if writer is not None and is_main_process:
                 writer.add_scalar("loss", loss.item(), global_step)
                 writer.add_scalar("rot_deg", (angle.mean()*180/torch.pi).item(), global_step)
                 writer.add_scalar("trans", trans.mean().item(), global_step)
                 writer.add_scalar("lr", scheduler.get_last_lr()[0], global_step)
+                # Log timing to TensorBoard
+                try:
+                    writer.add_scalar("time/data_ms", float(data_time * 1000.0), global_step)
+                    writer.add_scalar("time/fwd_ms", float(fwd_time * 1000.0), global_step)
+                except Exception:
+                    pass
 
             if global_step % cfg_dict["posenet_train"]["save_every"] == 0:
                 if is_distributed:
