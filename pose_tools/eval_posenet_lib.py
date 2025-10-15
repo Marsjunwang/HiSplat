@@ -86,6 +86,7 @@ def evaluate_posenet_on_megadepth1500(
     *,
     num_workers: int = 4,
     batch_size: int = 1,
+    img_resize: tuple[int, int] = (800, 608),
 ) -> Dict[str, Any]:
     """
     Evaluate a PoseNet-style enhancer directly (no Hydra/config) on MegaDepth1500.
@@ -133,6 +134,26 @@ def evaluate_posenet_on_megadepth1500(
                 K1[:, 1, 1] = K1[:, 1, 1] * sy1
                 K1[:, 0, 2] = K1[:, 0, 2] * sx1
                 K1[:, 1, 2] = K1[:, 1, 2] * sy1
+            
+            if img_resize is not None:
+                _, _, h0_old, w0_old = img0.shape
+                _, _, h1_old, w1_old = img1.shape
+                img0 = F.interpolate(img0, size=img_resize, mode="bilinear", align_corners=False)
+                img1 = F.interpolate(img1, size=img_resize, mode="bilinear", align_corners=False)
+                # scales (orig/new)
+                s0x, s0y = (w0_old / float(img_resize[0])), (h0_old / float(img_resize[1]))
+                s1x, s1y = (w1_old / float(img_resize[0])), (h1_old / float(img_resize[1]))
+                K0 = K0.clone()
+                K1 = K1.clone()
+                K0[:, 0, 0] = K0[:, 0, 0] * (1.0 / s0x)
+                K0[:, 1, 1] = K0[:, 1, 1] * (1.0 / s0y)
+                K0[:, 0, 2] = K0[:, 0, 2] * (1.0 / s0x)
+                K0[:, 1, 2] = K0[:, 1, 2] * (1.0 / s0y)
+                K1[:, 0, 0] = K1[:, 0, 0] * (1.0 / s1x)
+                K1[:, 1, 1] = K1[:, 1, 1] * (1.0 / s1y)
+                K1[:, 0, 2] = K1[:, 0, 2] * (1.0 / s1x)
+                K1[:, 1, 2] = K1[:, 1, 2] * (1.0 / s1y)
+                
 
             _, _, h0, w0 = img0.shape
             _, _, h1, w1 = img1.shape

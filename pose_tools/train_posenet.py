@@ -167,12 +167,14 @@ def main(cfg_dict: DictConfig):
         train_module = enhancer
 
     # Optionally load checkpoint
-    if cfg.checkpointing.load is not None and os.path.exists(cfg.checkpointing.load):
+    if cfg.checkpointing.load is not None:
+        assert os.path.exists(cfg.checkpointing.load), \
+            f"Checkpoint file {cfg.checkpointing.load} does not exist"
         sd = torch.load(cfg.checkpointing.load, map_location="cpu").get("state_dict", None)
         if sd is not None:
-            stripped = {".".join(k.split(".")[1:]): v for k, v in sd.items()}
+            # stripped = {".".join(k.split(".")[1:]): v for k, v in sd.items()}
             target = train_module.module if hasattr(train_module, "module") else train_module
-            target.load_state_dict(stripped, strict=False)
+            target.load_state_dict(sd, strict=True)
 
     # Optimizer
     # Read optimizer from top-level (preferred) or nested under posenet_train (fallback)
@@ -328,7 +330,7 @@ def main(cfg_dict: DictConfig):
             output = DecoderOutput(color=images)
             output.pred_pose_0to1 = pred_01
             output.gt_pose_0to1 = gt_01
-            loss, angle, trans = loss_fn.forward_posenet(
+            loss, res = loss_fn.forward_posenet(
                 output, None, None, global_step)
             fwd_time = time.time() - t_fwd_start
 
@@ -365,7 +367,7 @@ def main(cfg_dict: DictConfig):
 
             global_step += 1
             if pbar is not None and is_main_process:
-                pbar.set_description(f"Train PoseNet(MD) | step {global_step} | loss {loss.item():.4f} rot_deg {(angle.mean()*180/torch.pi).item():.2f} trans {trans.mean().item():.3f}")
+                pbar.set_description(f"Train PoseNet(MD) | step {global_step} | loss {loss.item():.4f} rot_deg {res['rot_deg']:.2f} trans_deg {res['trans_deg']:.2f} trans_scale {res['trans_scale']:.3f}")
                 pbar.update(1)
                 # Show timing (ms) in tqdm postfix
                 try:
@@ -377,8 +379,9 @@ def main(cfg_dict: DictConfig):
                     pass
             if writer is not None and is_main_process:
                 writer.add_scalar("loss", loss.item(), global_step)
-                writer.add_scalar("rot_deg", (angle.mean()*180/torch.pi).item(), global_step)
-                writer.add_scalar("trans", trans.mean().item(), global_step)
+                writer.add_scalar("rot_deg", res['rot_deg'], global_step)
+                writer.add_scalar("trans_deg", res['trans_deg'], global_step)
+                writer.add_scalar("trans_scale", res['trans_scale'], global_step)
                 writer.add_scalar("lr", scheduler.get_last_lr()[0], global_step)
                 # Log timing to TensorBoard
                 try:

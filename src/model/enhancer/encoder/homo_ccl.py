@@ -81,6 +81,4 @@ class HomoCCL(nn.Module):
                        patch_size=H)
         H2_norm = normalize_homography(H2, H)
         
-        
-        
         return H_motions

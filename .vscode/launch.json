@@ -93,7 +93,7 @@
             "name": "Eval PoseNet (MegaDepth-1500)",
             "type": "python",
             "request": "launch",
-            "module": "tools.eval_posenet",
+            "module": "pose_tools.eval_posenet",
             "args": [
                 "output_dir=posenet_eval_md",
                 "+experiment=acid_enhancer",

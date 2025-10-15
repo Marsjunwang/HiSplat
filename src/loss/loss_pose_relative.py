@@ -87,6 +87,42 @@ class LossPoseRelative(Loss[LossPoseRelativeCfg, LossPoseRelativeCfgWrapper]):
         scale_loss = (torch.log(an) - torch.log(bn)).abs()
         return dir_angle, scale_loss
 
+    @staticmethod
+    def _trans_dir_scale_bkp(
+        pred_01: Tensor,
+        gt_01: Tensor,
+        eps: float = 1e-6,
+    ) -> tuple[Tensor, Tensor]:
+        """Decompose translation into direction error (radians) and scale ratio loss.
+
+        We compare translations in the predicted rotation frame to avoid explicit inverses.
+        Let a = R_pred^T t_gt, b = R_pred^T t_pred.
+        - Direction term: angle between a and b (acos of cosine similarity)
+        - Scale term: |log(||a||) - log(||b||)|, a symmetric ratio penalty
+        Shapes: pred_01, gt_01: [B, 4, 4]
+        Returns (dir_angle, scale_loss) per batch.
+        """
+        assert pred_01.shape == gt_01.shape and pred_01.shape[-2:] == (4, 4)
+        R_pred = pred_01[..., :3, :3]
+        t_pred = pred_01[..., :3, 3]
+        R_gt = gt_01[..., :3, :3]
+        t_gt = gt_01[..., :3, 3]
+
+        # Project GT and predicted translations into predicted frame
+        Rt = R_pred.transpose(-2, -1)
+        a = torch.einsum("...ij,...j->...i", Rt, t_gt)
+        b = torch.einsum("...ij,...j->...i", Rt, t_pred)
+
+        # Direction angle
+        an = a.norm(dim=-1).clamp_min(eps)
+        bn = b.norm(dim=-1).clamp_min(eps)
+        cos_dir = ((a * b).sum(dim=-1) / (an * bn)).clamp(min=-1.0 + eps, max=1.0 - eps)
+        dir_angle = torch.acos(cos_dir)
+
+        # Scale ratio penalty (symmetric): |log(||a||) - log(||b||)|
+        scale_loss = (torch.log(an) - torch.log(bn)).abs()
+        return dir_angle, scale_loss
+
     def forward(
         self,
         prediction: DecoderOutput,
@@ -138,11 +174,12 @@ class LossPoseRelative(Loss[LossPoseRelativeCfg, LossPoseRelativeCfgWrapper]):
         loss = self.cfg.weight_rot * angle.mean() + self.cfg.weight_trans * trans_combined.mean()
 
         # Store diagnostics for logging (similar to file_context_0)
-        self.last_rot_deg_mean = angle.mean() * 180.0 / torch.pi
-        self.last_trans_mean = trans_combined.mean()
-        self.last_trans_dir_mean = trans_dir.mean()
-        self.last_trans_scale_mean = trans_scale.mean()
-        return loss, angle, trans_combined
+        res = {
+            "rot_deg":angle.mean().item() * 180.0 / torch.pi,
+            "trans_deg": trans_dir.mean().item() * 180.0 / torch.pi,
+            "trans_scale": trans_scale.mean().item() * 180.0 / torch.pi, # just for logging
+        }
+        return loss, res
 
     def dynamic_forward(
         self,
