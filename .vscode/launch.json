@@ -118,10 +118,11 @@
             "args": [
                 "+experiment=acid_enhancer",
                 "output_dir=posenet_md_train",
-                "model/enhancer=enhancer",
+                "model/enhancer=enhancer_hier",
                 "model.enhancer.pose_enhancer.use_norm_xy=true",
                 "posenet_train.batch_size=2",
-                "loss.pose_relative.weight_trans_scale=0.0"
+                "loss.pose_relative.weight_trans_scale=0.0",
+                "model.enhancer.pose_enhancer.pose_encoder.attn_encoder=[512, 512, 2, 0.5]"
             ],
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}/third_party/accelerated_features",

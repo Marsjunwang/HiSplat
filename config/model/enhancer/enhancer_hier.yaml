@@ -20,6 +20,7 @@ pose_enhancer:
     spatila_softmax: false
     spatila_softmax_tau: 0.2
     use_norm_xy: false    # normal xy v2
+    attn_encoder: null
   pose_decoder:
     num_input_features: 1
     num_frames_to_predict_for: 2

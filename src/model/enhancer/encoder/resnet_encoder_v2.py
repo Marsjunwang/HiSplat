@@ -14,6 +14,7 @@ import torch.nn.functional as F
 import torchvision.models as models
 import torch.utils.model_zoo as model_zoo
 from ..utils.model import ECAFusionReduce
+from .attn.C2PSA import C2PSA
 
 class ResNetMultiImageInput(models.ResNet):
     """Constructs a resnet model with varying number of input images.
@@ -119,6 +120,7 @@ class ResnetHierarchicalEncoder(nn.Module):
                  spatila_softmax=True,
                  spatila_softmax_tau=0.2,
                  use_norm_xy=False,
+                 attn_encoder=None,
                  **kwargs):
         super(ResnetHierarchicalEncoder, self).__init__()
 
@@ -189,6 +191,9 @@ class ResnetHierarchicalEncoder(nn.Module):
             #     nn.ReLU(inplace=True),
             # )
 
+        if attn_encoder:
+            self.attn_encoder = C2PSA(*attn_encoder)
+
     def forward(self, input_image, norm_xy=None):
         self.features = []
         x = self.input_normlize(input_image)
@@ -230,5 +235,8 @@ class ResnetHierarchicalEncoder(nn.Module):
                     self.eca_fusion_reduce(feat_layer2[:,0], 
                                            feat_layer2[:,1])))
         self.features.append(self.encoder.layer4(self.features[-1]))
+
+        if self.attn_encoder:
+            self.features.append(self.attn_encoder(self.features))
 
         return self.features
