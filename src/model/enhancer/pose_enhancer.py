@@ -2,24 +2,34 @@ from numpy import AxisError
 from .enhancer import PoseEnhancer
 from dataclasses import dataclass
 from typing import List, Dict, Sequence
-import os
-
-from jaxtyping import Float
-from torch import Tensor
+from .encoder.resnet_encoder import ResnetEncoder
+from .encoder.resnet_encoder_v2 import ResnetHierarchicalEncoder
+from .encoder.homo_ccl import HomoCCL, HomoCCLS
 import torch.nn.functional as F
 import torch
-import contextlib
 
-from .encoder import ResnetEncoder, ResnetHierarchicalEncoder
-from .decoder import PoseDecoder, PoseCNN
+from .decoder import PoseDecoder, PoseCNN, PoseDecoderHomo
 from .decoder.pose_decoder_sparse import PoseDecoderSparse
 from .encoder.xfeat_sparse_encoder import XFeatSparseEncoder
 from einops import rearrange
 from .utils.transformation_pose import transformation_from_parameters
 from .utils.pose_alignment import (align_world_to_view0, relative_pose_0_to_1, 
                                    split_pred_relative_two_directions)
-from .encoder.homo_ccl import HomoCCL
 
+POSE_ENCODERS = {
+    "resnet": ResnetEncoder,
+    "resnet_hier": ResnetHierarchicalEncoder,
+}
+
+HOMO_ENCODERS = {
+    "homo_ccl": HomoCCL,
+    "homo_ccls": HomoCCLS,
+}
+
+POSE_DECODERS = {
+    "pose_decoder": PoseDecoder,
+    "pose_decoder_homo": PoseDecoderHomo,
+}
 
 @dataclass
 class PoseEnhancerCfg:
@@ -49,9 +59,9 @@ class PoseSeparateEnhancer(PoseEnhancer):
         self.fov_overlap_epsilon_deg = cfg.fov_overlap_epsilon_deg
     
     def _init_model(self, cfg: PoseEnhancerCfg):
-        self.pose_encoder = ResnetEncoder(**cfg.pose_encoder)
+        self.pose_encoder = POSE_ENCODERS[cfg.pose_encoder["name"]](**cfg.pose_encoder)
         cfg.pose_decoder.update(num_ch_enc=self.pose_encoder.num_ch_enc)
-        self.pose_decoder = PoseDecoder(**cfg.pose_decoder)
+        self.pose_decoder = POSE_DECODERS[cfg.pose_decoder["name"]](**cfg.pose_decoder)
     
     def _get_RT_matrix(self, 
                        axisangle, 
@@ -137,9 +147,10 @@ class PoseHierarchicalEnhancer(PoseSeparateEnhancer):
         super().__init__(cfg)
     
     def _init_model(self, cfg: PoseEnhancerCfg):
-        self.pose_encoder = ResnetHierarchicalEncoder(**cfg.pose_encoder)
+        self.pose_encoder = POSE_ENCODERS[cfg.pose_encoder["name"]](
+            **cfg.pose_encoder)
         cfg.pose_decoder.update(num_ch_enc=self.pose_encoder.num_ch_enc)
-        self.pose_decoder = PoseDecoder(**cfg.pose_decoder)
+        self.pose_decoder = POSE_DECODERS[cfg.pose_decoder["name"]](**cfg.pose_decoder)
     
     def forward(
         self,
@@ -150,7 +161,8 @@ class PoseHierarchicalEnhancer(PoseSeparateEnhancer):
         elif self.cfg.input_data == "feat":  # feat from transformer b v 128 64 64
             input_data = features[1]
         elif self.cfg.input_data == "feat_backbone":  # feat from backbone (b v) 128 32 32
-            input_data = rearrange(features[0][-1], "(b v) c h w -> b v c h w", b=context["image"].shape[0])
+            input_data = rearrange(features[0][-1], "(b v) c h w -> b v c h w", 
+                                   b=context["image"].shape[0])
         else:
             raise ValueError(f"Invalid input_data: {self.cfg.input_data}")
         
@@ -196,9 +208,12 @@ class PoseHierarchicalEnhancer(PoseSeparateEnhancer):
 
 class PoseHierarchicalCCLEnhancer(PoseSeparateEnhancer):
     def __init__(self, cfg: PoseEnhancerCfg):
-        super().__init__(cfg)
-        
-        self.homo_ccl = HomoCCL(**cfg.pose_encoder['homo_ccl'])
+        super().__init__(cfg)  
+        homo_encoder_cfg = cfg.pose_encoder.get('homo_ccl', None)
+        if homo_encoder_cfg is None:
+            raise ValueError(f"homo_ccl is not configured in {cfg.pose_encoder}")
+        self.homo_ccl = HOMO_ENCODERS[homo_encoder_cfg['name']](
+            **homo_encoder_cfg)
     
     def forward(
         self,
@@ -209,7 +224,8 @@ class PoseHierarchicalCCLEnhancer(PoseSeparateEnhancer):
         elif self.cfg.input_data == "feat":  # feat from transformer b v 128 64 64
             input_data = features[1]
         elif self.cfg.input_data == "feat_backbone":  # feat from backbone (b v) 128 32 32
-            input_data = rearrange(features[0][-1], "(b v) c h w -> b v c h w", b=context["image"].shape[0])
+            input_data = rearrange(features[0][-1], "(b v) c h w -> b v c h w", 
+                                   b=context["image"].shape[0])
         else:
             raise ValueError(f"Invalid input_data: {self.cfg.input_data}")
         
@@ -225,21 +241,22 @@ class PoseHierarchicalCCLEnhancer(PoseSeparateEnhancer):
         input_data = rearrange(input_data, "b v c h w -> (b v) c h w")
         pose_feature = self.pose_encoder(input_data)
 
-        pose_feature = self.homo_ccl(pose_feature, context["image"])
+        H_motions, wrap_images = self.homo_ccl(pose_feature, context["image"])
         
-        axisangle, translation = self.pose_decoder(pose_feature)
+        axisangle, translation = self.pose_decoder(H_motions)
 
         # Build SE3 with optional FOV overlap constraint
-        pred_pose = self._get_RT_matrix(
+        pred_10 = self._get_RT_matrix(
             axisangle,
             translation,
             intrinsics=context["intrinsics"],
             near=context["near"],
             far=context["far"],
             image_size=context["image"].shape[-2:],
+
         )
         # Compute predicted relative poses (0->1 and 1->0)
-        pred_01, pred_10 = split_pred_relative_two_directions(pred_pose)
+        pred_01 = pred_10.inverse()
 
         # Align GT extrinsics to view 0 for consistency with the required world frame.
         gt_pose_0to1 = None
@@ -252,6 +269,8 @@ class PoseHierarchicalCCLEnhancer(PoseSeparateEnhancer):
             "pred_pose_0to1": pred_01,
             "pred_pose_1to0": pred_10,
             "gt_pose_0to1": gt_pose_0to1,
+            "wrap_images": wrap_images,
+            "gt_images": context["image"][:,0]
         }
         return context, features
    

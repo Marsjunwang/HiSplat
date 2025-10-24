@@ -77,8 +77,8 @@ def rot_from_axisangle(vec: torch.Tensor) -> torch.Tensor:
     Input 'vec' has to be Bx1x3
     """
     # Make function robust to inputs shaped [..., 3] or [..., 1, 3]
-    if vec.shape[-2:] == (1, 3):
-        vec = vec.squeeze(-2)
+    if vec.shape[-2:] == (1, 3) and vec.shape[-3] == 1:
+        vec = vec.squeeze(-3).squeeze(-2)
     if vec.shape[-1] != 3:
         raise ValueError(f"rot_from_axisangle expects last dimension 3, got {tuple(vec.shape)}")
 

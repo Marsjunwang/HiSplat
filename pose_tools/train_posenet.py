@@ -83,7 +83,7 @@ def make_dataloader(megadepth_root: str, batch_size: int, num_workers: int,
             df=32,
             img_padding=False,
             depth_padding=False,
-            load_depth=False,
+            load_depth=True,
         )
         for path in _tqdm.tqdm(npz_paths, desc="[MegaDepth] Loading metadata")
     ]
@@ -114,6 +114,18 @@ def adjust_intrinsics_with_scale(K: torch.Tensor, scale: torch.Tensor) -> torch.
     K[:, 0, 2] *= sx
     K[:, 1, 2] *= sy
     return K
+
+def intensity_loss(gen_frames, gt_frames, l_num):
+    """
+    Calculates the sum of lp losses between the predicted and ground truth frames.
+
+    @param gen_frames: The predicted frames at each scale.
+    @param gt_frames: The ground truth frames at each scale
+    @param l_num: 1 or 2 for l1 and l2 loss, respectively).
+
+    @return: The lp loss.
+    """
+    return torch.mean(torch.abs((gen_frames - gt_frames) ** l_num))
 
 @hydra.main(version_base=None, config_path="../config", config_name="main_enhanced")
 def main(cfg_dict: DictConfig):
@@ -332,6 +344,13 @@ def main(cfg_dict: DictConfig):
             output.gt_pose_0to1 = gt_01
             loss, res = loss_fn.forward_posenet(
                 output, None, None, global_step)
+            homo_res = eo.get("wrap_images", None)
+            gt_images = eo.get("gt_images", None)
+            if homo_res is not None and gt_images is not None:
+                for i, (homo_images, homo_ones) in enumerate(homo_res):
+                    homo_loss = intensity_loss(homo_images, gt_images*homo_ones, 1)
+                    writer.add_scalar(f"intensity_loss_{i}", homo_loss.item(), global_step)
+                    loss += homo_loss
             fwd_time = time.time() - t_fwd_start
 
         # Backward with grad accumulation

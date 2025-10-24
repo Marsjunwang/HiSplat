@@ -102,9 +102,9 @@ class MegaDepthDataset(Dataset):
             # read depth. shape: (h, w)
             if self.mode in ['train', 'val']:
                 depth0 = read_megadepth_depth(
-                    osp.join(self.root_dir, self.scene_info['depth_paths'][idx0]), pad_to=self.depth_max_size)
+                    osp.join(self.root_dir, self.scene_info['depth_paths'][idx0]), pad_to=self.depth_max_size, resize=self.img_resize)
                 depth1 = read_megadepth_depth(
-                    osp.join(self.root_dir, self.scene_info['depth_paths'][idx1]), pad_to=self.depth_max_size)
+                    osp.join(self.root_dir, self.scene_info['depth_paths'][idx1]), pad_to=self.depth_max_size, resize=self.img_resize)
             else:
                 depth0 = depth1 = torch.tensor([])
 

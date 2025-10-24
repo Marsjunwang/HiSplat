@@ -191,6 +191,7 @@ class ResnetHierarchicalEncoder(nn.Module):
             #     nn.ReLU(inplace=True),
             # )
 
+        self.attn_encoder = None
         if attn_encoder:
             self.attn_encoder = C2PSA(*attn_encoder)
 
@@ -237,6 +238,6 @@ class ResnetHierarchicalEncoder(nn.Module):
         self.features.append(self.encoder.layer4(self.features[-1]))
 
         if self.attn_encoder:
-            self.features.append(self.attn_encoder(self.features))
+            self.features.append(self.attn_encoder(self.features[-1]))
 
         return self.features

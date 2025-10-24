@@ -1,5 +1,3 @@
-from typing import Optional
-
 from .enhancer import Enhancer, PoseEnhancer, FeatEnhancer
 from .pose_enhancer import (PoseSeparateEnhancer, PoseEnhancerCfg, 
                             PoseXfeatEnhancer, PoseHierarchicalEnhancer, 
@@ -17,6 +15,7 @@ POSE_ENHANCERS = {
 FEAT_ENHANCERS = {
     "panormic_feat": PanormicFeatEnhancer,
 }
+
 
 def get_pose_enhancer(cfg: PoseEnhancerCfg) -> PoseEnhancer:
     return POSE_ENHANCERS[cfg.name](cfg)

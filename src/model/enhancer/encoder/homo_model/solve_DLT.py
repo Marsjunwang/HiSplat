@@ -135,17 +135,29 @@ class DLTSolver(nn.Module):
     - No repeated tensor creation during forward pass
     - Better memory efficiency and speed
     - Easy device management
+    
+    Notes on patch size:
+    - "patch_size" can be a scalar (assumes square: H=W=patch_size)
+    - or a tuple/list (H, W) for rectangular patches/images
     """
     
     def __init__(self, patch_size=512., device=None):
         super(DLTSolver, self).__init__()
         
-        self.patch_size = patch_size
-        
         # Determine device
         if device is None:
             device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.device = device
+        
+        # Normalize patch size to (H, W)
+        if isinstance(patch_size, (tuple, list)) and len(patch_size) == 2:
+            patch_h = float(patch_size[0])
+            patch_w = float(patch_size[1])
+        else:
+            patch_h = float(patch_size)
+            patch_w = float(patch_size)
+        self.patch_h = patch_h
+        self.patch_w = patch_w
         
         # Pre-initialize all auxiliary matrices on device as buffers
         # Using register_buffer ensures they move with the model to different devices
@@ -170,10 +182,13 @@ class DLTSolver(nn.Module):
         self.register_buffer('Mb', torch.tensor(
             Aux_Mb, dtype=torch.float32, device=device))
         
-        # Pre-initialize reference points tensor
-        ref_points = torch.tensor([0., 0., patch_size, 0., 0., patch_size, 
-                                   patch_size, patch_size], 
-                                 dtype=torch.float32, device=device
+        # Pre-initialize reference points tensor for a rectangle: (0,0),(W,0),(0,H),(W,H)
+        ref_points = torch.tensor([
+                                   0.0, 0.0,
+                                   patch_w, 0.0,
+                                   0.0, patch_h,
+                                   patch_w, patch_h
+                                  ], dtype=torch.float32, device=device
                                  ).reshape(8, 1)
         self.register_buffer('ref_points', ref_points)
         

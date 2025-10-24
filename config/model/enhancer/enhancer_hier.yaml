@@ -11,6 +11,7 @@ pose_enhancer:
   # Small margin (in degrees) subtracted from FOV to avoid numerical boundary cases.
   fov_overlap_epsilon_deg: 0.5
   pose_encoder:
+    name: resnet_hier
     num_layers: 34
     weights_init: "pretrained"
     num_input_images: 2
@@ -22,6 +23,7 @@ pose_enhancer:
     use_norm_xy: false    # normal xy v2
     attn_encoder: null
   pose_decoder:
+    name: pose_decoder
     num_input_features: 1
     num_frames_to_predict_for: 2
     stride: 1

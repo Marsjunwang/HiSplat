@@ -1,3 +1,4 @@
+name: resnet_hier
 num_layers: 18
 weights_init: "pretrained"
 num_input_images: 2

@@ -16,7 +16,8 @@ class PoseDecoder(nn.Module):
                  num_frames_to_predict_for=None, 
                  stride=1, 
                  joint_pose=False,
-                 num_view_per_frame=1):
+                 num_view_per_frame=1,
+                 **kwargs):
         super(PoseDecoder, self).__init__()
 
         self.num_ch_enc = num_ch_enc
@@ -71,3 +72,79 @@ class PoseDecoder(nn.Module):
         translation = 0.1 * out[..., 3:]
 
         return axisangle, translation
+    
+class PoseDecoderHomo(nn.Module):
+    def __init__(self, num_ch_enc, num_input_features, 
+                 num_frames_to_predict_for=None, 
+                 stride=1, 
+                 joint_pose=False,
+                 num_view_per_frame=1,
+                 **kwargs):
+        super(PoseDecoderHomo, self).__init__()
+
+        self.num_ch_enc = num_ch_enc
+        self.num_input_features = num_input_features
+        self.joint_pose = joint_pose
+        self.num_view_per_frame = num_view_per_frame
+
+        if num_frames_to_predict_for is None:
+            num_frames_to_predict_for = num_input_features - 1
+        self.num_frames_to_predict_for = num_frames_to_predict_for
+
+        self.convs = OrderedDict()
+        self.convs[("squeeze")] = nn.Conv2d(2, 128, 1)
+        # two conv blocks with residual and dropout after activation
+        self.convs[("pose", 0)] = nn.Conv2d(128, 128, 3, stride, 1)
+        self.convs[("pose", 1)] = nn.Conv2d(128, 128, 3, stride, 1)
+
+        self.relu = nn.ReLU(inplace=False)
+        self.dropout = nn.Dropout2d(p=0.2)
+
+        self.net = nn.ModuleList(list(self.convs.values()))
+        self.net.apply(self._init_weights)
+        # replace conv heads with linear heads on pooled features for numerical stability
+        self.global_pool = nn.AdaptiveAvgPool2d(1)
+        self.trans_head = nn.Linear(128, 3)
+        self.rot_head = nn.Linear(128, 3)
+        self.scale_head = nn.Linear(128, 1)
+        
+    def _init_weights(self, m):
+        if isinstance(m, nn.Conv2d):
+            nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+            if m.bias is not None:
+                nn.init.constant_(m.bias, 0)
+        elif isinstance(m, nn.BatchNorm2d):
+            nn.init.constant_(m.weight, 1)
+            nn.init.constant_(m.bias, 0)
+
+    def forward(self, input_features):
+        B, C, H, W = input_features[-1].shape
+        if self.joint_pose:
+            last_features = input_features[-1].reshape(-1, self.num_view_per_frame, C, H, W).mean(1)
+        else:
+            last_features = input_features[-1]
+
+        cat_features = self.relu(self.convs["squeeze"](last_features))
+
+        out = cat_features
+
+        # residual block stack
+        for i in range(2):
+            residual = out
+            out = self.convs[("pose", i)](out)
+            out = self.relu(out)
+            out = self.dropout(out)
+            # match shapes (they are equal here)
+            out = out + residual
+
+        # global average pool to vector
+        out = self.global_pool(out).view(out.size(0), -1)
+        
+        axisangle = 0.1 * self.rot_head(out).view(-1, 
+            1, 1, 3)
+        translation = 0.1 * self.trans_head(out).view(-1, 
+            1, 1, 3)
+        scale = 0.1 * self.scale_head(out).view(-1, 
+            1, 1, 1)
+
+        return axisangle, translation * scale

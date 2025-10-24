@@ -148,7 +148,7 @@ def read_megadepth_gray(path, resize=None, df=None, padding=False, augment_fn=No
     return image, mask, scale
 
 
-def read_megadepth_depth(path, pad_to=None):
+def read_megadepth_depth(path, pad_to=None, resize=None):
 
     if str(path).startswith('s3://'):
         depth = load_array_from_s3(path, MEGADEPTH_CLIENT, None, use_h5py=True)
@@ -156,5 +156,7 @@ def read_megadepth_depth(path, pad_to=None):
         depth = np.array(h5py.File(path, 'r')['depth'])
     if pad_to is not None:
         depth, _ = pad_bottom_right(depth, pad_to, ret_mask=False)
+    if resize is not None:
+        depth = cv2.resize(depth, resize)
     depth = torch.from_numpy(depth).float()  # (h, w)
     return depth

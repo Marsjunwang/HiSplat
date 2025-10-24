@@ -1,3 +1,4 @@
+name: pose_decoder
 num_ch_enc: 128
 num_input_features: 1
 num_frames_to_predict_for: 2
