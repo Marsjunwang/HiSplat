@@ -8,7 +8,7 @@ from .encoder.homo_ccl import HomoCCL, HomoCCLS
 import torch.nn.functional as F
 import torch
 
-from .decoder import PoseDecoder, PoseCNN, PoseDecoderHomo
+from .decoder import PoseDecoder, PoseDecoderV2, PoseCNN, PoseDecoderHomo
 from .decoder.pose_decoder_sparse import PoseDecoderSparse
 from .encoder.xfeat_sparse_encoder import XFeatSparseEncoder
 from einops import rearrange
@@ -28,6 +28,7 @@ HOMO_ENCODERS = {
 
 POSE_DECODERS = {
     "pose_decoder": PoseDecoder,
+    "pose_decoder_v2": PoseDecoderV2,
     "pose_decoder_homo": PoseDecoderHomo,
 }
 
@@ -241,22 +242,26 @@ class PoseHierarchicalCCLEnhancer(PoseSeparateEnhancer):
         input_data = rearrange(input_data, "b v c h w -> (b v) c h w")
         pose_feature = self.pose_encoder(input_data)
 
-        H_motions, wrap_images = self.homo_ccl(pose_feature, context["image"])
-        
-        axisangle, translation = self.pose_decoder(H_motions)
+        # B = context["image"].shape[0]
+        # homo_feature = pose_feature[-2]
+        # feature_0 = homo_feature[:B,:,:,:]
+        # feature_1 = homo_feature[B:,:,:,:]
+        # H_motions01, wrap_images10 = self.homo_ccl(feature_0, feature_1, context["image"][:,1])
+        # H_motions10, wrap_images01 = self.homo_ccl(feature_1, feature_0, context["image"][:,0])
+        _, wrap_images = self.homo_ccl(pose_feature, context["image"])
+        axisangle, translation = self.pose_decoder(pose_feature)
 
         # Build SE3 with optional FOV overlap constraint
-        pred_10 = self._get_RT_matrix(
+        pred_pose = self._get_RT_matrix(
             axisangle,
             translation,
             intrinsics=context["intrinsics"],
             near=context["near"],
             far=context["far"],
             image_size=context["image"].shape[-2:],
-
         )
         # Compute predicted relative poses (0->1 and 1->0)
-        pred_01 = pred_10.inverse()
+        pred_01, pred_10 = split_pred_relative_two_directions(pred_pose)
 
         # Align GT extrinsics to view 0 for consistency with the required world frame.
         gt_pose_0to1 = None
@@ -269,8 +274,10 @@ class PoseHierarchicalCCLEnhancer(PoseSeparateEnhancer):
             "pred_pose_0to1": pred_01,
             "pred_pose_1to0": pred_10,
             "gt_pose_0to1": gt_pose_0to1,
-            "wrap_images": wrap_images,
-            "gt_images": context["image"][:,0]
+            # "homo_res01": wrap_images01,
+            # "homo_res10": wrap_images10,
+            "homo_res": wrap_images,
+            "gt_images": context["image"]
         }
         return context, features
    

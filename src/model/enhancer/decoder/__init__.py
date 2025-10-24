@@ -1,2 +1,2 @@
 from .pose_cnn import PoseCNN
-from .pose_decoder import PoseDecoder, PoseDecoderHomo
+from .pose_decoder import PoseDecoder, PoseDecoderHomo, PoseDecoderV2

@@ -45,7 +45,7 @@ def main(cfg_dict: DictConfig):
             if any(k.startswith("module.") for k in sd.keys()):
                 sd = {k[len("module."):]: v for k, v in sd.items()}
             try:
-                enhancer.load_state_dict(sd, strict=False)
+                enhancer.load_state_dict(sd, strict=True)
             except Exception as e:
                 print(f"Warning: failed to load checkpoint into enhancer: {e}")
 
@@ -58,7 +58,7 @@ def main(cfg_dict: DictConfig):
         output_dir=out_root,
         num_workers=4,
         batch_size=1,
-        img_resize=(800, 608),
+        img_resize=(608, 800),
     )
 
     out_path = out_root / "posenet_eval_megadepth.json"

@@ -24,14 +24,14 @@ class RegressionH4ptNet1(nn.Module):
         
         # Conv block 2
         self.conv2_1 = nn.Conv2d(64, 64, kernel_size=3, padding=1)
-        self.conv2_2 = nn.Conv2d(64, 64, kernel_size=3, padding=1)
+        self.conv2_2 = nn.Conv2d(64, 64, kernel_size=3, padding=1, stride=2)
         
         # Conv block 3
-        self.conv3_1 = nn.Conv2d(64, 128, kernel_size=3, padding=1)
-        self.conv3_2 = nn.Conv2d(128, 128, kernel_size=3, padding=1)
+        self.conv3_1 = nn.Conv2d(64, 128, kernel_size=3, padding=1, stride=1)
+        self.conv3_2 = nn.Conv2d(128, 128, kernel_size=3, padding=1, stride=2)
         
         # Fully connected layers (implemented as 1x1 and 4x4 convolutions)
-        self.fc1 = nn.Conv2d(128, 128, kernel_size=4, padding=0)  # VALID padding
+        self.fc1 = nn.Conv2d(128, 128, kernel_size=3, padding=0)  # VALID padding
         self.fc2 = nn.Conv2d(128, 128, kernel_size=1, padding=0)
         self.fc3 = nn.Conv2d(128, 8, kernel_size=1, padding=0)
         
@@ -66,8 +66,7 @@ class RegressionH4ptNet1(nn.Module):
         # Reshape: squeeze spatial dimensions and add dimension at index 2
         # tf.squeeze(tf.squeeze(fc3,1),1) removes height and width dimensions
         # tf.expand_dims(..., [2]) adds dimension at index 2
-        x = x.squeeze(-1).squeeze(-1)  # Remove spatial dimensions (H, W)
-        H1_motion = x.unsqueeze(2)  # Add dimension at index 2: (batch, 8, 1)
+        H1_motion = x.squeeze(-1)
         
         return H1_motion
 
@@ -86,21 +85,20 @@ class RegressionH4ptNet2(nn.Module):
         super(RegressionH4ptNet2, self).__init__()
         
         # Conv block 1
-        self.conv1_1 = nn.Conv2d(input_channels, 64, kernel_size=3, padding=1)
+        self.conv1_1 = nn.Conv2d(input_channels, 64, kernel_size=5, padding=1, stride=2)
         self.conv1_2 = nn.Conv2d(64, 64, kernel_size=3, padding=1)
         self.maxpool1 = nn.MaxPool2d(kernel_size=2, stride=2)
         
         # Conv block 2
         self.conv2_1 = nn.Conv2d(64, 64, kernel_size=3, padding=1)
-        self.conv2_2 = nn.Conv2d(64, 64, kernel_size=3, padding=1)
-        self.maxpool2 = nn.MaxPool2d(kernel_size=2, stride=2)
+        self.conv2_2 = nn.Conv2d(64, 64, kernel_size=3, padding=1, stride=2)
         
         # Conv block 3
-        self.conv3_1 = nn.Conv2d(64, 128, kernel_size=3, padding=1)
-        self.conv3_2 = nn.Conv2d(128, 128, kernel_size=3, padding=1)
+        self.conv3_1 = nn.Conv2d(64, 128, kernel_size=3, padding=1, stride=1)
+        self.conv3_2 = nn.Conv2d(128, 128, kernel_size=3, padding=1, stride=2)
         
         # Fully connected layers (implemented as 1x1 and 4x4 convolutions)
-        self.fc1 = nn.Conv2d(128, 128, kernel_size=4, padding=0)  # VALID padding
+        self.fc1 = nn.Conv2d(128, 128, kernel_size=3, padding=0)  # VALID padding
         self.fc2 = nn.Conv2d(128, 128, kernel_size=1, padding=0)
         self.fc3 = nn.Conv2d(128, 8, kernel_size=1, padding=0)
         
@@ -122,7 +120,6 @@ class RegressionH4ptNet2(nn.Module):
         # Conv block 2
         x = F.relu(self.conv2_1(x))
         x = F.relu(self.conv2_2(x))
-        x = self.maxpool2(x)
         
         # Conv block 3
         x = F.relu(self.conv3_1(x))
@@ -136,8 +133,7 @@ class RegressionH4ptNet2(nn.Module):
         # Reshape: squeeze spatial dimensions and add dimension at index 2
         # tf.squeeze(tf.squeeze(fc3,1),1) removes height and width dimensions
         # tf.expand_dims(..., [2]) adds dimension at index 2
-        x = x.squeeze(-1).squeeze(-1)  # Remove spatial dimensions (H, W)
-        H2_motion = x.unsqueeze(2)  # Add dimension at index 2: (batch, 8, 1)
+        H2_motion = x.squeeze(-1)
         
         return H2_motion
     
@@ -161,26 +157,24 @@ class RegressionH4ptNet3(nn.Module):
         self.grid_h = grid_h
         
         # Conv block 1
-        self.conv1_1 = nn.Conv2d(input_channels, 64, kernel_size=3, padding=1)
+        self.conv1_1 = nn.Conv2d(input_channels, 64, kernel_size=7, padding=2, stride=4)
         self.conv1_2 = nn.Conv2d(64, 64, kernel_size=3, padding=1)
         self.maxpool1 = nn.MaxPool2d(kernel_size=2, stride=2)
         
         # Conv block 2
         self.conv2_1 = nn.Conv2d(64, 64, kernel_size=3, padding=1)
-        self.conv2_2 = nn.Conv2d(64, 64, kernel_size=3, padding=1)
-        self.maxpool2 = nn.MaxPool2d(kernel_size=2, stride=2)
+        self.conv2_2 = nn.Conv2d(64, 64, kernel_size=3, padding=1, stride=2)
         
         # Conv block 3
         self.conv3_1 = nn.Conv2d(64, 128, kernel_size=3, padding=1)
-        self.conv3_2 = nn.Conv2d(128, 128, kernel_size=3, padding=1)
-        self.maxpool3 = nn.MaxPool2d(kernel_size=2, stride=2)
+        self.conv3_2 = nn.Conv2d(128, 128, kernel_size=3, padding=1, stride=2)
         
         self.conv4_1 = nn.Conv2d(128, 256, kernel_size=3, padding=1)
         self.conv4_2 = nn.Conv2d(256, 256, kernel_size=3, padding=1)
         
         
         # Fully connected layers (implemented as 1x1 and 4x4 convolutions)
-        self.fc1 = nn.Conv2d(256, 2048, kernel_size=4, padding=0)  # VALID padding
+        self.fc1 = nn.Conv2d(256, 2048, kernel_size=3, padding=0)  # VALID padding
         self.fc2 = nn.Conv2d(2048, 1024, kernel_size=1, padding=0)
         self.fc3 = nn.Conv2d(1024, (grid_w+1)*(grid_h+1)*2, kernel_size=1, padding=0)
         
@@ -202,12 +196,10 @@ class RegressionH4ptNet3(nn.Module):
         # Conv block 2
         x = F.relu(self.conv2_1(x))
         x = F.relu(self.conv2_2(x))
-        x = self.maxpool2(x)
         
         # Conv block 3
         x = F.relu(self.conv3_1(x))
         x = F.relu(self.conv3_2(x))
-        x = self.maxpool3(x)
         
         # Conv block 4
         x = F.relu(self.conv4_1(x))
@@ -221,8 +213,7 @@ class RegressionH4ptNet3(nn.Module):
         # Reshape: squeeze spatial dimensions and add dimension at index 2
         # tf.squeeze(tf.squeeze(fc3,1),1) removes height and width dimensions
         # tf.expand_dims(..., [2]) adds dimension at index 2
-        x = x.squeeze(-1).squeeze(-1)  # Remove spatial dimensions (H, W)
-        H3_motion = x.unsqueeze(2)  # Add dimension at index 2: (batch, 8, 1)
+        H3_motion = x.view(-1, self.grid_h+1, self.grid_w+1, 2)  # Remove spatial dimensions (H, W)
         
         return H3_motion
     
@@ -249,10 +240,12 @@ class RegressionH4ptNetS(nn.Module):
         # Conv block 2
         self.conv2_1 = nn.Conv2d(64, 64, kernel_size=3, padding=1)
         self.conv2_2 = nn.Conv2d(64, 64, kernel_size=3, padding=1)
+        self.maxpool2 = nn.MaxPool2d(kernel_size=2, stride=2)
         
         # Conv block 3
         self.conv3_1 = nn.Conv2d(64, 128, kernel_size=3, padding=1)
         self.conv3_2 = nn.Conv2d(128, 128, kernel_size=3, padding=1)
+        self.maxpool3 = nn.MaxPool2d(kernel_size=2, stride=2)
         
         # Fully connected layers (implemented as 1x1 and 4x4 convolutions)
         self.fc1 = nn.Conv2d(128, 128, kernel_size=4, padding=0)  # VALID padding
@@ -277,10 +270,12 @@ class RegressionH4ptNetS(nn.Module):
         # Conv block 2
         x = F.relu(self.conv2_1(x))
         x = F.relu(self.conv2_2(x))
+        x = self.maxpool2(x)
         
         # Conv block 3
         x = F.relu(self.conv3_1(x))
         x = F.relu(self.conv3_2(x))
+        x = self.maxpool3(x)
         
         # Fully connected layers
         x = F.relu(self.fc1(x))

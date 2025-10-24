@@ -79,6 +79,8 @@ def rot_from_axisangle(vec: torch.Tensor) -> torch.Tensor:
     # Make function robust to inputs shaped [..., 3] or [..., 1, 3]
     if vec.shape[-2:] == (1, 3) and vec.shape[-3] == 1:
         vec = vec.squeeze(-3).squeeze(-2)
+    if vec.shape[-2:] == (1, 3):
+        vec = vec.squeeze(-2)
     if vec.shape[-1] != 3:
         raise ValueError(f"rot_from_axisangle expects last dimension 3, got {tuple(vec.shape)}")
 
@@ -200,6 +202,43 @@ def _build_4x4_from_rotation(rotation_3x3: torch.Tensor, device: torch.device, d
     M[..., 3, 3] = 1
     return M
 
+
+def homography_from_rotation_axisangle(
+    axisangle: torch.Tensor,
+    K_src: torch.Tensor,
+    K_dst: torch.Tensor | None = None,
+    invert: bool = False,
+) -> torch.Tensor:
+    """
+    Compute rotation-only homography H = K_dst^{-1} R K_src from axis-angle.
+
+    Args:
+        axisangle: [..., 3] or [..., 1, 3]
+        K_src:     [..., 3, 3] source intrinsics
+        K_dst:     [..., 3, 3] destination intrinsics (defaults to K_src)
+        invert:    if True, use R^T instead of R
+
+    Returns:
+        H: [..., 3, 3]
+    """
+    K_src = _ensure_intrinsics_3x3(K_src)
+    if K_dst is None:
+        K_dst = K_src
+    else:
+        K_dst = _ensure_intrinsics_3x3(K_dst)
+
+    R = rot_from_axisangle(axisangle)[..., :3, :3]
+    if invert:
+        R = R.transpose(-2, -1)
+
+    # batched K^{-1}
+    try:
+        K_dst_inv = K_dst.inverse()
+    except Exception:
+        K_dst_inv = K_dst.cpu().inverse().to(K_dst.device)
+
+    H = torch.matmul(torch.matmul(K_dst_inv, R), K_src)
+    return H
 
 def constrain_rotation_to_infinite_fov_overlap(
     rotation_matrix_4x4: torch.Tensor,

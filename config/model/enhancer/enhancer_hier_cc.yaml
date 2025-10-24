@@ -17,7 +17,7 @@ pose_enhancer:
     pretrained: True
     channels: 3   # images 3 feat 128
     homo_ccl:
-      name: homo_ccls
+      name: homo_ccl
       ccl_mode: "global"
       softmax_scale: 10
       kernel_size: 3
@@ -26,13 +26,13 @@ pose_enhancer:
       padding: "same"
       tiles_y: 2
       tiles_x: 2
-      patch_sizes: [16]
+      patch_sizes: [32, 16, 8]
   pose_decoder:
-    name: pose_decoder_homo
+    name: pose_decoder
     num_input_features: 1
     num_frames_to_predict_for: 2
     stride: 1
-    num_view_per_frame: 1    
+    num_view_per_frame: 2    
     joint_pose: true    # for relative pose with multi-view, if true, the pose is the mean of all views
   
 feat_enhancer:

@@ -72,7 +72,77 @@ class PoseDecoder(nn.Module):
         translation = 0.1 * out[..., 3:]
 
         return axisangle, translation
-    
+
+class PoseDecoderV2(nn.Module):
+    """
+    Pose decoder with translation and rotation heads
+    """
+    def __init__(self, num_ch_enc, num_input_features, 
+                 num_frames_to_predict_for=None, 
+                 stride=1, 
+                 joint_pose=False,
+                 num_view_per_frame=1,
+                 **kwargs):
+        super(PoseDecoderV2, self).__init__()
+
+        self.num_ch_enc = num_ch_enc
+        self.num_input_features = num_input_features
+        self.joint_pose = joint_pose
+        self.num_view_per_frame = num_view_per_frame
+
+        if num_frames_to_predict_for is None:
+            num_frames_to_predict_for = num_input_features - 1
+        self.num_frames_to_predict_for = num_frames_to_predict_for
+
+        self.convs = OrderedDict()
+        self.convs[("squeeze")] = nn.Conv2d(self.num_ch_enc[-1], 256, 1)
+        # Trunk keeps a fixed 256-channel pipeline; heads branch from trunk
+        self.convs[("pose", 0)] = nn.Conv2d(256, 256, 3, stride, 1)
+        self.convs[("pose", 1)] = nn.Conv2d(256, 256, 3, stride, 1)
+        # Rotation and translation heads (1x1) over the shared trunk
+        self.convs[("pose", 2)] = nn.Conv2d(256, 3 * num_frames_to_predict_for, 1)
+        self.convs[("pose", 3)] = nn.Conv2d(256, 3 * num_frames_to_predict_for, 1)
+
+        self.relu = nn.ReLU(inplace=False)
+
+        self.net = nn.ModuleList(list(self.convs.values()))
+        self.net.apply(self._init_weights)
+        
+    def _init_weights(self, m):
+        if isinstance(m, nn.Conv2d):
+            nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+            if m.bias is not None:
+                nn.init.constant_(m.bias, 0)
+        elif isinstance(m, nn.BatchNorm2d):
+            nn.init.constant_(m.weight, 1)
+            nn.init.constant_(m.bias, 0)
+
+    def forward(self, input_features):
+        B, C, H, W = input_features[-1].shape
+        if self.joint_pose:
+            last_features = input_features[-1].reshape(-1, self.num_view_per_frame, C, H, W).mean(1)
+        else:
+            last_features = input_features[-1]
+
+        cat_features = self.relu(self.convs["squeeze"](last_features))
+
+        # Shared trunk
+        trunk = self.relu(self.convs[("pose", 0)](cat_features))
+        trunk = self.relu(self.convs[("pose", 1)](trunk))
+
+        # Heads
+        rot_map = self.convs[("pose", 2)](trunk)
+        trans_map = self.convs[("pose", 3)](trunk)
+
+        # Global average pool to vectors
+        rot_vec = rot_map.mean(3).mean(2)
+        trans_vec = trans_map.mean(3).mean(2)
+
+        axisangle = 0.1 * rot_vec.view(-1, self.num_frames_to_predict_for, 1, 3)
+        translation = 0.1 * trans_vec.view(-1, self.num_frames_to_predict_for, 1, 3)
+
+        return axisangle, translation
+     
 class PoseDecoderHomo(nn.Module):
     def __init__(self, num_ch_enc, num_input_features, 
                  num_frames_to_predict_for=None, 

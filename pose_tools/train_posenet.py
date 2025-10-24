@@ -32,6 +32,7 @@ with install_import_hook(("src",), ("beartype", "beartype")):
     from src.loss import get_losses
     from src.model.decoder.decoder import DecoderOutput
 
+torch.autograd.set_detect_anomaly(True)
 
 @dataclass
 class DefaultTrainCfg:
@@ -104,7 +105,7 @@ def make_dataloader(megadepth_root: str, batch_size: int, num_workers: int,
     return loader
 
 
-def adjust_intrinsics_with_scale(K: torch.Tensor, scale: torch.Tensor) -> torch.Tensor:
+def adjust_intrinsics_with_scale(K: torch.Tensor, scale: torch.Tensor, img_shape: tuple[int, int]) -> torch.Tensor:
     # scale = [w/w_new, h/h_new] → sx=1/scale_x, sy=1/scale_y
     assert K.dim() == 3 and scale.dim() == 2 and K.shape[0] == scale.shape[0]
     sx, sy = (1.0 / scale[:, 0]), (1.0 / scale[:, 1])
@@ -113,19 +114,41 @@ def adjust_intrinsics_with_scale(K: torch.Tensor, scale: torch.Tensor) -> torch.
     K[:, 1, 1] *= sy
     K[:, 0, 2] *= sx
     K[:, 1, 2] *= sy
+    if K.max() > 100:  # 像素内参，归一化到 [0,1] 坐标
+        new_h, new_w = img_shape
+        K[:, 0] = K[:, 0] / float(new_w)
+        K[:, 1] = K[:, 1] / float(new_h)
     return K
 
-def intensity_loss(gen_frames, gt_frames, l_num):
-    """
-    Calculates the sum of lp losses between the predicted and ground truth frames.
+def intensity_loss(gen_frames, gt_frames, mask=None, l_num=1):
+    gen = gen_frames.detach() if not gen_frames.requires_grad else gen_frames
+    gt  = gt_frames.detach() if not gt_frames.requires_grad else gt_frames
+    # 在 FP32 中计算，避免 AMP 下溢/溢出
+    gen = gen.float()
+    gt  = gt.float()
 
-    @param gen_frames: The predicted frames at each scale.
-    @param gt_frames: The ground truth frames at each scale
-    @param l_num: 1 or 2 for l1 and l2 loss, respectively).
+    # 可选：若图像未标准化，这一步可略去；若 warp 可能产生越界值，建议夹紧
+    gen = gen.clamp(0.0, 1.0)
+    gt  = gt.clamp(0.0, 1.0)
 
-    @return: The lp loss.
-    """
-    return torch.mean(torch.abs((gen_frames - gt_frames) ** l_num))
+    diff = gen - gt
+    err  = diff.abs() if l_num == 1 else diff.pow(2)
+
+    finite = torch.isfinite(err)
+    if mask is not None:
+        m = mask > 0.5 if mask.dtype != torch.bool else mask
+        while m.dim() < err.dim():
+            m = m.unsqueeze(1)      # 广播到 [B,C,H,W]
+        valid = finite & m
+    else:
+        valid = finite
+
+    num_valid = valid.sum()
+    if num_valid == 0:
+        return err.mean()  # 无有效像素时返回 0，避免除 0
+
+    loss = err[valid].mean()
+    return loss.to(gen_frames.dtype)
 
 @hydra.main(version_base=None, config_path="../config", config_name="main_enhanced")
 def main(cfg_dict: DictConfig):
@@ -207,6 +230,7 @@ def main(cfg_dict: DictConfig):
     if optimizer_cfg is not None:
         warm_up_steps = int(optimizer_cfg.get("warm_up_steps", 0) or 0)
         use_cosine = bool(optimizer_cfg.get("cosine_lr", False))
+        alpha = optimizer_cfg.get("alpha", 1.0)
     if use_cosine:
         base_lr = float(opt_lr)
         pct_start = max(0.0, min(0.9, (warm_up_steps / steps_total) if steps_total > 0 else 0.01))
@@ -294,8 +318,8 @@ def main(cfg_dict: DictConfig):
         K0, K1 = batch_md["K0"], batch_md["K1"]             # [B,3,3]
         s0, s1 = batch_md.get("scale0", None), batch_md.get("scale1", None)
         if s0 is not None and s1 is not None:
-            K0 = adjust_intrinsics_with_scale(K0, s0)
-            K1 = adjust_intrinsics_with_scale(K1, s1)
+            K0 = adjust_intrinsics_with_scale(K0, s0, img0.shape[-2:])
+            K1 = adjust_intrinsics_with_scale(K1, s1, img1.shape[-2:])
 
         # If needed, pad to common size per-batch
         _, _, h0, w0 = img0.shape
@@ -344,15 +368,36 @@ def main(cfg_dict: DictConfig):
             output.gt_pose_0to1 = gt_01
             loss, res = loss_fn.forward_posenet(
                 output, None, None, global_step)
-            homo_res = eo.get("wrap_images", None)
+            if torch.isnan(loss):
+                # If loss is nan, skip this batch
+                continue
+            # homo_res01s = eo.get("homo_res01", None)
+            # homo_res10s = eo.get("homo_res10", None)
+            # gt_images = eo.get("gt_images", None)
+            # if homo_res01s is not None and homo_res10s is not None and gt_images is not None:
+            #     for i, (homo_res01, homo_res10) in enumerate(zip(homo_res01s, homo_res10s)):
+            #         homo_loss01 = intensity_loss(homo_res01[0], gt_images[:,1], mask=homo_res01[1], l_num=1)
+            #         homo_loss10 = intensity_loss(homo_res10[0], gt_images[:,0], mask=homo_res10[1], l_num=1)
+            #         homo_loss = homo_loss01 + homo_loss10
+            #         if is_main_process:
+            #             pbar.set_description(f"Train PoseNet(MD) | step {global_step} | loss {loss.item():.4f} rot_deg {res['rot_deg']:.2f} trans_deg {res['trans_deg']:.2f} trans_scale {res['trans_scale']:.3f} homo_loss: {homo_loss.item()}")
+            #         if is_main_process:
+            #             writer.add_scalar("homo_loss", homo_loss.item(), global_step)
+            #         # w = alpha * min(1.0, float(global_step) / float(max(1, warm_up_steps)))
+            #         loss = homo_loss * 10.0 + loss * 0.0
+            homo_res = eo.get("homo_res", None)
             gt_images = eo.get("gt_images", None)
-            if homo_res is not None and gt_images is not None:
-                for i, (homo_images, homo_ones) in enumerate(homo_res):
-                    homo_loss = intensity_loss(homo_images, gt_images*homo_ones, 1)
-                    writer.add_scalar(f"intensity_loss_{i}", homo_loss.item(), global_step)
-                    loss += homo_loss
+            homo_losses = []
+            if homo_res is not None:
+                for i, (wrap_image, wrap_one_image) in enumerate(homo_res):
+                    homo_loss = intensity_loss(wrap_image, gt_images[:,0], mask=wrap_one_image, l_num=1)
+                    homo_losses.append(homo_loss * 4**(2-i))
+                if is_main_process:
+                    pbar.set_description(f"Train PoseNet(MD) | step {global_step} | loss {loss.item():.4f} rot_deg {res['rot_deg']:.2f} trans_deg {res['trans_deg']:.2f} trans_scale {res['trans_scale']:.3f} homo_loss: {sum(homo_losses).item()}")
+                writer.add_scalar("homo_loss", sum(homo_losses).item(), global_step)
             fwd_time = time.time() - t_fwd_start
 
+        loss = sum(homo_losses) + loss
         # Backward with grad accumulation
         scaled_loss = loss / max(1, accum_steps)
         if use_amp:
@@ -386,7 +431,8 @@ def main(cfg_dict: DictConfig):
 
             global_step += 1
             if pbar is not None and is_main_process:
-                pbar.set_description(f"Train PoseNet(MD) | step {global_step} | loss {loss.item():.4f} rot_deg {res['rot_deg']:.2f} trans_deg {res['trans_deg']:.2f} trans_scale {res['trans_scale']:.3f}")
+                if homo_res is None:
+                    pbar.set_description(f"Train PoseNet(MD) | step {global_step} | loss {loss.item():.4f} rot_deg {res['rot_deg']:.2f} trans_deg {res['trans_deg']:.2f} trans_scale {res['trans_scale']:.3f}")
                 pbar.update(1)
                 # Show timing (ms) in tqdm postfix
                 try:

@@ -167,6 +167,18 @@ def evaluate_posenet_on_megadepth1500(
                 img1 = F.pad(img1, pad1, mode="constant", value=0.0)
 
             images = torch.stack([img0, img1], dim=1)
+            
+                        # normalize intrinsics
+            K0 = K0.clone()
+            K1 = K1.clone()
+            K0[:, 0, 0] = K0[:, 0, 0] / float(Wt)
+            K0[:, 1, 1] = K0[:, 1, 1] / float(Ht)
+            K0[:, 0, 2] = K0[:, 0, 2] / float(Wt)
+            K0[:, 1, 2] = K0[:, 1, 2] / float(Ht)
+            K1[:, 0, 0] = K1[:, 0, 0] / float(Wt)
+            K1[:, 1, 1] = K1[:, 1, 1] / float(Ht)
+            K1[:, 0, 2] = K1[:, 0, 2] / float(Wt)
+            K1[:, 1, 2] = K1[:, 1, 2] / float(Ht)
             intrinsics = torch.stack([K0, K1], dim=1)
             B, V, C, H, W = images.shape
             near = torch.full((B, V), 0.01, device=device, dtype=images.dtype)
